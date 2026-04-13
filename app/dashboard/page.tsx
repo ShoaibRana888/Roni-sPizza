@@ -1,28 +1,27 @@
 /**
  * FILE: app/dashboard/page.tsx
  * PURPOSE: Main dashboard for Roni's Pizza staff.
- *          - Shows live order cards (new / preparing / ready)
- *          - Each card has a 25-minute countdown timer
- *          - Staff click "Start prep" → "Mark ready" to advance order status
- *          - Table status strip shows which of the 4 tables are occupied
- *          - Orders auto-expire and tables reset after 1 hour
- *          - Subscribes to Supabase Realtime for live updates
+ *          - Live order cards with 25-minute countdown progress bar
+ *          - Supabase Realtime — new orders appear instantly
+ *          - Status: new → preparing → done → cleared (cancelled)
+ *          - "Clear table" button frees the table after food is collected
+ *          - Realtime skips updates we just made (prevents revert bug)
  * ROUTE: /dashboard
  */
 
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase, Order, OrderStatus } from '@/lib/supabase'
 import { formatPrice, STATUS_COLORS, STATUS_LABELS } from '@/lib/utils'
 
-const ORDER_DURATION_MS = 25 * 60 * 1000   // 25-minute prep countdown
-const TABLE_RESET_MS    = 60 * 60 * 1000   // tables auto-clear after 1 hour
+const ORDER_DURATION_MS = 25 * 60 * 1000
+const TABLE_RESET_MS    = 60 * 60 * 1000
 const TABLES            = [1, 2, 3, 4]
 
-function secondsLeft(createdAt: string, durationMs: number): number {
+function secondsLeft(createdAt: string): number {
   const elapsed = Date.now() - new Date(createdAt).getTime()
-  return Math.max(0, Math.floor((durationMs - elapsed) / 1000))
+  return Math.max(0, Math.floor((ORDER_DURATION_MS - elapsed) / 1000))
 }
 
 function fmtCountdown(secs: number): string {
@@ -32,57 +31,76 @@ function fmtCountdown(secs: number): string {
 }
 
 export default function DashboardPage() {
-  const [orders, setOrders] = useState<Order[]>([])
-  const [tick, setTick]     = useState(0)
-  const [filter, setFilter] = useState<OrderStatus | 'all'>('all')
+  const [orders, setOrders]   = useState<Order[]>([])
+  const [tick, setTick]       = useState(0)
+  const [filter, setFilter]   = useState<OrderStatus | 'all'>('all')
   const [loading, setLoading] = useState(true)
 
-  // Tick every second to keep countdowns live
+  // Track IDs we just updated so Realtime doesn't revert our optimistic changes
+  const pendingUpdates = useRef<Set<string>>(new Set())
+
+  // Tick every second for countdown timers
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 1000)
     return () => clearInterval(t)
   }, [])
 
-  // Auto-remove orders older than TABLE_RESET_MS (1 hour), freeing the table
+  // Auto-hide done orders older than 1 hour
   useEffect(() => {
     const expired = orders.filter(
-      (o) => Date.now() - new Date(o.created_at).getTime() > TABLE_RESET_MS
+      (o) =>
+        o.status === 'done' &&
+        Date.now() - new Date(o.created_at).getTime() > TABLE_RESET_MS
     )
     if (expired.length > 0) {
       setOrders((prev) => prev.filter((o) => !expired.find((e) => e.id === o.id)))
     }
   }, [tick, orders])
 
-  // ── Supabase: initial fetch + Realtime subscription ─────────────────────────
+  // Supabase: initial load + Realtime subscription
   useEffect(() => {
-    // 1. Load existing active orders on mount
     supabase
       .from('orders')
       .select('*')
-      .in('status', ['new', 'preparing', 'done'])
+      .not('status', 'eq', 'cancelled')
       .order('created_at', { ascending: false })
       .then(({ data, error }) => {
         if (!error && data) setOrders(data as Order[])
         setLoading(false)
       })
 
-    // 2. Subscribe to all order changes in real time
     const channel = supabase
       .channel('dashboard-orders')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'orders' },
         (payload) => {
+          const id = (payload.new as Order)?.id || (payload.old as Order)?.id
+
+          // Skip if we triggered this update (prevents revert bug)
+          if (id && pendingUpdates.current.has(id)) {
+            pendingUpdates.current.delete(id)
+            return
+          }
+
           if (payload.eventType === 'INSERT') {
-            setOrders((prev) => [payload.new as Order, ...prev])
+            const incoming = payload.new as Order
+            if (incoming.status !== 'cancelled') {
+              setOrders((prev) => [incoming, ...prev.filter((o) => o.id !== incoming.id)])
+            }
           }
           if (payload.eventType === 'UPDATE') {
-            setOrders((prev) =>
-              prev.map((o) => (o.id === payload.new.id ? (payload.new as Order) : o))
-            )
+            const updated = payload.new as Order
+            if (updated.status === 'cancelled') {
+              setOrders((prev) => prev.filter((o) => o.id !== updated.id))
+            } else {
+              setOrders((prev) =>
+                prev.map((o) => (o.id === updated.id ? updated : o))
+              )
+            }
           }
           if (payload.eventType === 'DELETE') {
-            setOrders((prev) => prev.filter((o) => o.id !== payload.old.id))
+            setOrders((prev) => prev.filter((o) => o.id !== (payload.old as Order).id))
           }
         }
       )
@@ -91,33 +109,36 @@ export default function DashboardPage() {
     return () => { supabase.removeChannel(channel) }
   }, [])
 
-  // ── Advance order status (new → preparing → done) ───────────────────────────
+  // Advance: new → preparing → done
   const advance = async (id: string) => {
     const order = orders.find((o) => o.id === id)
     if (!order) return
     const next: OrderStatus = order.status === 'new' ? 'preparing' : 'done'
 
-    // Optimistic update
+    pendingUpdates.current.add(id)
     setOrders((prev) =>
-      prev.map((o) =>
-        o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o
-      )
+      prev.map((o) => (o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o))
     )
 
-    // Persist to Supabase
-    const { error } = await supabase
-      .from('orders')
-      .update({ status: next })
-      .eq('id', id)
-
+    const { error } = await supabase.from('orders').update({ status: next }).eq('id', id)
     if (error) {
-      console.error('Failed to update order:', error)
-      // Revert optimistic update on failure
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.id === id ? { ...o, status: order.status } : o
-        )
-      )
+      console.error('Failed to advance order:', error)
+      pendingUpdates.current.delete(id)
+      setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status: order.status } : o)))
+    }
+  }
+
+  // Clear table: marks as cancelled and removes from active view
+  const clearTable = async (id: string) => {
+    pendingUpdates.current.add(id)
+    setOrders((prev) => prev.filter((o) => o.id !== id))
+
+    const { error } = await supabase.from('orders').update({ status: 'cancelled' }).eq('id', id)
+    if (error) {
+      console.error('Failed to clear table:', error)
+      pendingUpdates.current.delete(id)
+      const { data } = await supabase.from('orders').select('*').eq('id', id).single()
+      if (data) setOrders((prev) => [data as Order, ...prev])
     }
   }
 
@@ -141,7 +162,6 @@ export default function DashboardPage() {
 
   return (
     <>
-      {/* Top bar */}
       <header className="h-14 bg-white border-b flex items-center justify-between px-6 flex-shrink-0"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <h1 className="text-base font-medium">Dashboard</h1>
@@ -152,41 +172,43 @@ export default function DashboardPage() {
               {newCount} new order{newCount !== 1 ? 's' : ''}
             </span>
           )}
+          <span className="text-sm" style={{ color: 'rgba(28,15,8,0.35)' }}>
+            {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
         </div>
       </header>
 
       <div className="flex-1 overflow-y-auto p-6">
 
-        {/* Stats row */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
+        {/* Stats */}
+        <div className="grid grid-cols-4 gap-3 mb-6">
           {[
-            { label: 'New',       value: newCount,              color: '#92620A', bg: '#FEF3CD' },
-            { label: 'Preparing', value: prepCount,             color: '#1d4ed8', bg: '#dbeafe' },
-            { label: 'Done',      value: doneCount,             color: '#166534', bg: '#dcfce7' },
-            { label: 'Revenue',   value: formatPrice(revenue),  color: 'var(--espresso)', bg: 'var(--latte-light)' },
+            { label: 'Orders today', value: orders.length },
+            { label: 'In progress',  value: prepCount },
+            { label: 'Ready',        value: doneCount },
+            { label: 'Revenue',      value: formatPrice(revenue) },
           ].map((s) => (
-            <div key={s.label} className="bg-white rounded-xl border p-4"
+            <div key={s.label} className="bg-white rounded-xl p-4 border"
               style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
-              <p className="text-xs mb-1" style={{ color: 'rgba(28,15,8,0.4)' }}>{s.label}</p>
-              <p className="text-2xl font-serif" style={{ color: s.color }}>{s.value}</p>
+              <p className="text-xs mb-1.5" style={{ color: 'rgba(28,15,8,0.4)' }}>{s.label}</p>
+              <p className="text-2xl font-medium">{s.value}</p>
             </div>
           ))}
         </div>
 
-        {/* Table status */}
-        <div className="bg-white rounded-xl border p-4 mb-6 flex gap-3"
-          style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
-          {TABLES.map((n) => {
-            const occupied = activeTables.has(String(n))
+        {/* Table status strip */}
+        <div className="flex gap-3 mb-6">
+          {TABLES.map((t) => {
+            const busy = activeTables.has(String(t))
             return (
-              <div key={n} className="flex-1 rounded-lg p-3 text-center text-sm font-medium transition-all"
+              <div key={t} className="flex-1 rounded-xl border p-3 text-center"
                 style={{
-                  background: occupied ? 'var(--espresso)' : 'var(--cream)',
-                  color:      occupied ? '#fff' : 'rgba(28,15,8,0.3)',
+                  borderColor: busy ? 'rgba(196,154,108,0.5)' : 'rgba(28,15,8,0.08)',
+                  background:  busy ? 'rgba(196,154,108,0.08)' : '#fff',
                 }}>
-                Table {n}
-                <p className="text-xs font-normal mt-0.5" style={{ opacity: 0.7 }}>
-                  {occupied ? 'Occupied' : 'Free'}
+                <p className="text-xs mb-1" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {t}</p>
+                <p className="text-xs font-medium" style={{ color: busy ? 'var(--latte)' : 'var(--sage)' }}>
+                  {busy ? 'Occupied' : 'Free'}
                 </p>
               </div>
             )
@@ -196,20 +218,19 @@ export default function DashboardPage() {
         {/* Filter tabs */}
         <div className="flex gap-2 mb-4">
           {FILTER_TABS.map((tab) => (
-            <button key={tab.value}
-              onClick={() => setFilter(tab.value)}
-              className="text-xs font-medium px-4 py-1.5 rounded-full border transition-all"
+            <button key={tab.value} onClick={() => setFilter(tab.value)}
+              className="px-3 py-1.5 rounded-full text-xs border transition-all"
               style={{
-                borderColor: filter === tab.value ? 'var(--espresso)' : 'rgba(28,15,8,0.12)',
                 background:  filter === tab.value ? 'var(--espresso)' : '#fff',
                 color:       filter === tab.value ? '#fff' : 'rgba(28,15,8,0.5)',
+                borderColor: filter === tab.value ? 'var(--espresso)' : 'rgba(28,15,8,0.15)',
               }}>
               {tab.label}
             </button>
           ))}
         </div>
 
-        {/* Orders */}
+        {/* Orders grid */}
         {loading ? (
           <div className="text-center py-24" style={{ color: 'rgba(28,15,8,0.25)' }}>
             <p className="text-sm">Loading orders…</p>
@@ -220,74 +241,127 @@ export default function DashboardPage() {
             <p className="text-sm">No orders yet — waiting for customers</p>
           </div>
         ) : (
-          <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
-            {filtered.map((order) => {
-              const secs    = secondsLeft(order.created_at, ORDER_DURATION_MS)
-              const urgent  = secs < 5 * 60 && order.status !== 'done'
-              return (
-                <div key={order.id}
-                  className="bg-white rounded-2xl border p-5 flex flex-col gap-3"
-                  style={{
-                    borderColor: urgent ? '#f97316' : 'rgba(28,15,8,0.08)',
-                    boxShadow:   urgent ? '0 0 0 2px #fed7aa' : 'none',
-                  }}>
-
-                  {/* Card header */}
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="font-medium text-sm">Table {order.table_number}</p>
-                      {order.customer_name && (
-                        <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>
-                          {order.customer_name}
-                        </p>
-                      )}
-                    </div>
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_COLORS[order.status]}`}>
-                      {STATUS_LABELS[order.status]}
-                    </span>
-                  </div>
-
-                  {/* Items */}
-                  <ul className="text-sm space-y-1" style={{ color: 'rgba(28,15,8,0.7)' }}>
-                    {order.items.map((item, i) => (
-                      <li key={i} className="flex justify-between gap-2">
-                        <span>{item.quantity}× {item.menuItem.name}</span>
-                        <span style={{ color: 'rgba(28,15,8,0.4)' }}>{formatPrice(item.quantity * item.menuItem.price)}</span>
-                      </li>
-                    ))}
-                  </ul>
-
-                  {order.notes && (
-                    <p className="text-xs italic px-3 py-2 rounded-lg"
-                      style={{ background: 'var(--cream)', color: 'rgba(28,15,8,0.5)' }}>
-                      "{order.notes}"
-                    </p>
-                  )}
-
-                  {/* Footer */}
-                  <div className="flex items-center justify-between pt-1 border-t"
-                    style={{ borderColor: 'rgba(28,15,8,0.06)' }}>
-                    <p className="font-medium text-sm">{formatPrice(order.total)}</p>
-                    {order.status !== 'done' && order.status !== 'cancelled' && (
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs font-mono tabular-nums"
-                          style={{ color: urgent ? '#f97316' : 'rgba(28,15,8,0.35)' }}>
-                          {fmtCountdown(secs)}
-                        </span>
-                        <button onClick={() => advance(order.id)}
-                          className="text-xs font-medium px-3 py-1.5 rounded-lg text-white transition-all"
-                          style={{ background: order.status === 'new' ? 'var(--espresso)' : 'var(--sage)' }}>
-                          {order.status === 'new' ? 'Start prep' : 'Mark ready'}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
+          <div className="grid gap-4"
+            style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+            {filtered.map((order) => (
+              <OrderCard
+                key={order.id}
+                order={order}
+                tick={tick}
+                onAdvance={advance}
+                onClear={clearTable}
+              />
+            ))}
           </div>
         )}
       </div>
     </>
+  )
+}
+
+// ── Order Card ────────────────────────────────────────────────────────────────
+function OrderCard({
+  order, tick, onAdvance, onClear,
+}: {
+  order: Order
+  tick: number
+  onAdvance: (id: string) => void
+  onClear: (id: string) => void
+}) {
+  const secs    = secondsLeft(order.created_at)
+  const pct     = Math.round((secs / (ORDER_DURATION_MS / 1000)) * 100)
+  const overdue = secs === 0 && order.status !== 'done'
+
+  return (
+    <div className="bg-white rounded-xl border overflow-hidden"
+      style={{ borderColor: overdue ? 'rgba(192,57,43,0.4)' : 'rgba(28,15,8,0.08)' }}>
+
+      {/* Countdown progress bar — drains over 25 minutes */}
+      {order.status !== 'done' && (
+        <div className="h-1 w-full" style={{ background: 'rgba(28,15,8,0.06)' }}>
+          <div className="h-full transition-all duration-1000"
+            style={{
+              width: `${pct}%`,
+              background: overdue ? '#C0392B' : pct > 40 ? 'var(--sage)' : 'var(--latte)',
+            }} />
+        </div>
+      )}
+
+      {/* Card header */}
+      <div className="px-4 py-3 flex justify-between items-start border-b"
+        style={{ borderColor: 'rgba(28,15,8,0.06)' }}>
+        <div>
+          <p className="font-medium text-sm">#{order.id.slice(-4).toUpperCase()}</p>
+          <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>
+            Table {order.table_number}
+            {order.customer_name ? ` · ${order.customer_name}` : ''}
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1.5">
+          <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${STATUS_COLORS[order.status]}`}>
+            {STATUS_LABELS[order.status]}
+          </span>
+          {order.status !== 'done' && (
+            <span className="text-xs font-mono tabular-nums"
+              style={{ color: overdue ? '#C0392B' : 'rgba(28,15,8,0.4)' }}>
+              {overdue ? 'Overdue' : fmtCountdown(secs)}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Items list */}
+      <div className="px-4 py-3">
+        {order.items.map((item, i) => (
+          <div key={i} className="flex text-sm py-0.5" style={{ color: 'rgba(28,15,8,0.7)' }}>
+            <span className="font-medium mr-1.5 w-5 shrink-0" style={{ color: 'var(--latte)' }}>
+              {item.quantity}×
+            </span>
+            <span className="flex-1">{item.menuItem.name}</span>
+            {item.selectedOptions && Object.values(item.selectedOptions).length > 0 && (
+              <span className="text-xs ml-2 shrink-0" style={{ color: 'rgba(28,15,8,0.35)' }}>
+                {Object.values(item.selectedOptions).join(', ')}
+              </span>
+            )}
+          </div>
+        ))}
+        {order.notes && (
+          <p className="text-xs mt-2 italic px-2 py-1.5 rounded-lg"
+            style={{ background: 'var(--cream)', color: 'rgba(28,15,8,0.5)' }}>
+            "{order.notes}"
+          </p>
+        )}
+      </div>
+
+      {/* Footer: total + action button */}
+      <div className="px-4 py-3 border-t flex items-center gap-2"
+        style={{ borderColor: 'rgba(28,15,8,0.06)' }}>
+        <span className="flex-1 text-xs font-medium">{formatPrice(order.total)}</span>
+
+        {order.status === 'new' && (
+          <button onClick={() => onAdvance(order.id)}
+            className="text-xs font-medium px-3 py-1.5 rounded-lg text-white"
+            style={{ background: 'var(--espresso)' }}>
+            Start prep
+          </button>
+        )}
+
+        {order.status === 'preparing' && (
+          <button onClick={() => onAdvance(order.id)}
+            className="text-xs font-medium px-3 py-1.5 rounded-lg text-white"
+            style={{ background: 'var(--sage)' }}>
+            Mark ready
+          </button>
+        )}
+
+        {order.status === 'done' && (
+          <button onClick={() => onClear(order.id)}
+            className="text-xs font-medium px-3 py-1.5 rounded-lg border transition-all hover:bg-red-50"
+            style={{ borderColor: 'rgba(28,15,8,0.2)', color: 'rgba(28,15,8,0.6)' }}>
+            Clear table ✕
+          </button>
+        )}
+      </div>
+    </div>
   )
 }
