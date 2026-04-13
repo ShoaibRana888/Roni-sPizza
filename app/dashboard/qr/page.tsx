@@ -2,8 +2,8 @@
  * FILE: app/dashboard/qr/page.tsx
  * PURPOSE: QR code generator for Roni's Pizza's 4 tables.
  *          Each QR code links to /order?table=N (the customer ordering page).
- *          Staff can manually set the base URL (e.g. http://192.168.18.28:3000)
- *          so QR codes work on the local network without any config changes.
+ *          Base URL is read from NEXT_PUBLIC_BASE_URL env var (set to your
+ *          live domain), falling back to window.location.origin.
  *          Staff can download a PNG or print a ready-to-laminate card per table.
  * ROUTE: /dashboard/qr
  */
@@ -17,15 +17,11 @@ const TABLES = [1, 2, 3, 4]
 const ENV_BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || ''
 
 export default function QRPage() {
-  const [detectedUrl, setDetectedUrl] = useState('')
-  const [customUrl, setCustomUrl]     = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
 
   useEffect(() => {
-    setDetectedUrl(window.location.origin)
-    if (ENV_BASE_URL) setCustomUrl(ENV_BASE_URL)
+    setBaseUrl(ENV_BASE_URL || window.location.origin)
   }, [])
-
-  const baseUrl = customUrl.trim() || detectedUrl
 
   return (
     <>
@@ -36,55 +32,18 @@ export default function QRPage() {
 
       <div className="flex-1 overflow-y-auto p-6">
 
-        {/* URL configurator */}
-        <div className="bg-white rounded-xl border p-4 mb-4"
+        {/* Info strip */}
+        <div className="bg-white rounded-xl border p-4 mb-6"
           style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
           <p className="text-xs font-medium mb-1" style={{ color: 'rgba(28,15,8,0.45)' }}>
-            Base URL for QR codes
+            Live ordering URL
           </p>
-          <p className="text-xs mb-3" style={{ color: 'rgba(28,15,8,0.35)' }}>
-            Set this to your PC's local IP so phones on the same Wi-Fi can scan and order.
-            Leave blank to use the auto-detected URL.
+          <p className="text-sm font-mono" style={{ color: 'var(--latte)' }}>
+            {baseUrl ? `${baseUrl}/order?table=1 … 4` : 'Loading…'}
           </p>
-          <div className="flex gap-2 items-center">
-            <input
-              type="text"
-              value={customUrl}
-              onChange={(e) => setCustomUrl(e.target.value)}
-              placeholder={detectedUrl || 'http://192.168.18.28:3000'}
-              className="flex-1 text-sm border rounded-lg px-3 py-2 outline-none"
-              style={{ borderColor: 'rgba(28,15,8,0.15)', fontFamily: 'monospace' }}
-            />
-            {customUrl && (
-              <button onClick={() => setCustomUrl('')}
-                className="text-xs px-3 py-2 rounded-lg border"
-                style={{ borderColor: 'rgba(28,15,8,0.15)', color: 'rgba(28,15,8,0.5)' }}>
-                Reset
-              </button>
-            )}
-          </div>
-          <p className="text-xs mt-2 font-mono" style={{ color: 'rgba(28,15,8,0.35)' }}>
-            Links to: <span style={{ color: 'var(--latte)' }}>{baseUrl}/order?table=1</span>
+          <p className="text-xs mt-1" style={{ color: 'rgba(28,15,8,0.35)' }}>
+            Controlled by <code>NEXT_PUBLIC_BASE_URL</code> in your environment variables.
           </p>
-        </div>
-
-        {/* Quick-fill buttons */}
-        <div className="flex flex-wrap gap-2 mb-6">
-          <p className="text-xs w-full" style={{ color: 'rgba(28,15,8,0.4)' }}>Quick fill:</p>
-          {[
-            'http://192.168.18.28:3000',
-            'http://localhost:3000',
-          ].map((url) => (
-            <button key={url} onClick={() => setCustomUrl(url)}
-              className="text-xs px-3 py-1.5 rounded-full border font-mono transition-all"
-              style={{
-                borderColor: customUrl === url ? 'var(--espresso)' : 'rgba(28,15,8,0.15)',
-                background:  customUrl === url ? 'var(--espresso)' : '#fff',
-                color:       customUrl === url ? '#fff' : 'rgba(28,15,8,0.6)',
-              }}>
-              {url}
-            </button>
-          ))}
         </div>
 
         <p className="text-sm mb-4" style={{ color: 'rgba(28,15,8,0.5)' }}>

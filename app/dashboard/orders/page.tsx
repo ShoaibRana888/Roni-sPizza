@@ -3,34 +3,57 @@
  * PURPOSE: Full order history table for staff.
  *          Shows all orders (new, preparing, done) in a sortable table view.
  *          Staff can advance order status from here too.
+ *          Fetches from Supabase on mount and updates status via Supabase.
  * ROUTE: /dashboard/orders
  */
 
 'use client'
 
-import { useState } from 'react'
-import { Order } from '@/lib/supabase'
+import { useState, useEffect } from 'react'
+import { supabase, Order, OrderStatus } from '@/lib/supabase'
 import { formatPrice, timeAgo, STATUS_COLORS, STATUS_LABELS } from '@/lib/utils'
 
 export default function OrdersPage() {
-  // Starts empty — orders populate as customers place them via QR
-  const [orders, setOrders] = useState<Order[]>([])
+  const [orders, setOrders]   = useState<Order[]>([])
+  const [loading, setLoading] = useState(true)
 
-  // TODO: Fetch from Supabase on mount:
-  // useEffect(() => {
-  //   supabase.from('orders').select('*').order('created_at', { ascending: false })
-  //     .then(({ data }) => setOrders(data || []))
-  // }, [])
-
-  const advance = (id: string) => {
-    setOrders((prev) =>
-      prev.map((o) => {
-        if (o.id !== id) return o
-        const next = o.status === 'new' ? 'preparing' : 'done'
-        return { ...o, status: next as Order['status'], updated_at: new Date().toISOString() }
+  // Fetch all orders on mount, newest first
+  useEffect(() => {
+    supabase
+      .from('orders')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (!error && data) setOrders(data as Order[])
+        setLoading(false)
       })
+  }, [])
+
+  // Advance order status and persist to Supabase
+  const advance = async (id: string) => {
+    const order = orders.find((o) => o.id === id)
+    if (!order) return
+    const next: OrderStatus = order.status === 'new' ? 'preparing' : 'done'
+
+    // Optimistic update
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o
+      )
     )
-    // TODO: supabase.from('orders').update({ status: next }).eq('id', id)
+
+    const { error } = await supabase
+      .from('orders')
+      .update({ status: next })
+      .eq('id', id)
+
+    if (error) {
+      console.error('Failed to update order:', error)
+      // Revert on failure
+      setOrders((prev) =>
+        prev.map((o) => (o.id === id ? { ...o, status: order.status } : o))
+      )
+    }
   }
 
   return (
@@ -41,7 +64,11 @@ export default function OrdersPage() {
       </header>
 
       <div className="flex-1 overflow-auto p-6">
-        {orders.length === 0 ? (
+        {loading ? (
+          <div className="text-center py-24" style={{ color: 'rgba(28,15,8,0.25)' }}>
+            <p className="text-sm">Loading orders…</p>
+          </div>
+        ) : orders.length === 0 ? (
           <div className="text-center py-24" style={{ color: 'rgba(28,15,8,0.25)' }}>
             <p className="text-4xl mb-3">📋</p>
             <p className="text-sm">No orders yet</p>
