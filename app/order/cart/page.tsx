@@ -19,6 +19,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { Suspense } from 'react'
 import { useCartStore, resolveItemPrice } from '@/lib/cartStore'
 import { formatPrice } from '@/lib/utils'
+import { supabase } from '../../../lib/supabase'
 
 function CartPageInner() {
   const router = useRouter()
@@ -29,23 +30,16 @@ function CartPageInner() {
 
   const placeOrder = async () => {
     if (items.length === 0) return
-
-    // Lock this table for 1 hour so no second order can be placed
+    const { data, error } = await supabase.from('orders').insert({
+      table_number: table,
+      customer_name: customerName || null,
+      items,
+      total: total(),
+      status: 'new',
+    }).select().single()
+    if (error) { console.error(error); return }
     sessionStorage.setItem(`ronis_table_${table}_order_time`, String(Date.now()))
-
-    // TODO: Replace with real Supabase insert:
-    // const { data, error } = await supabase.from('orders').insert({
-    //   table_number: table,
-    //   customer_name: customerName || null,
-    //   items,
-    //   total: total(),
-    //   status: 'new',
-    // }).select().single()
-    // if (error) { console.error(error); return }
-    // router.push(`/order/confirm?table=${table}&orderId=${data.id}`)
-
-    const orderId = `ord-${Date.now()}`
-    router.push(`/order/confirm?table=${table}&orderId=${orderId}`)
+    router.push(`/order/confirm?table=${table}&orderId=${data.id}`)
   }
 
   // ── Empty cart ────────────────────────────────────────────────────────────────

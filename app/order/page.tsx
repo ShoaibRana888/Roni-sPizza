@@ -14,6 +14,7 @@
 
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useEffect, useState, Suspense } from 'react'
+import { supabase } from '../../lib/supabase'
 import { MenuItem } from '@/lib/supabase'
 import { MOCK_MENU } from '@/lib/mockData'
 import { useCartStore } from '@/lib/cartStore'
@@ -44,24 +45,15 @@ function OrderPageInner() {
     // In production this is verified server-side via Supabase.
     const key       = `ronis_table_${table}_order_time`
     const orderTime = sessionStorage.getItem(key)
-    if (orderTime) {
-      const elapsed = Date.now() - parseInt(orderTime)
-      if (elapsed < TABLE_RESET_MS) {
-        setBlocked(true)  // table is still occupied
-      } else {
-        sessionStorage.removeItem(key)  // expired — table is free again
-      }
-    }
-
-    // TODO: Replace sessionStorage check with Supabase query:
-    // const { data } = await supabase
-    //   .from('orders')
-    //   .select('id')
-    //   .eq('table_number', table)
-    //   .in('status', ['new', 'preparing'])
-    //   .limit(1)
-    //   .single()
-    // if (data) setBlocked(true)
+  
+    const { data } = await supabase
+      .from('orders')
+      .select('id')
+      .eq('table_number', table)
+      .in('status', ['new', 'preparing'])
+      .limit(1)
+      .maybeSingle()
+    if (data) setBlocked(true)
   }, [table, setTableNumber])
 
   // ── Guard: invalid table number ──────────────────────────────────────────────
