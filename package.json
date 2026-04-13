@@ -1,15 +1,15 @@
 {
-  "name": "qr-cafe",
+  "name": "ronis-pizza",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -H 0.0.0.0",
+    "dev": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "14.2.0",
+    "next": "^14.2.30",
     "react": "^18",
     "react-dom": "^18",
     "@supabase/supabase-js": "^2.39.0",
