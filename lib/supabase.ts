@@ -1,25 +1,34 @@
 /**
  * FILE: lib/supabase.ts
- * PURPOSE: Supabase client initialisation + all TypeScript types used across the app.
- *          Import `supabase` wherever you need to query the database.
- *          Import types (MenuItem, Order, etc.) wherever you need them.
- * USED BY: All pages and lib files that talk to the database
+ * PURPOSE: Supabase client + TypeScript types.
+ *
+ * Uses @supabase/ssr createBrowserClient so the auth session cookie is
+ * automatically included in every request — including update/delete calls
+ * from dashboard pages. Without this, updates are sent as anon and
+ * rejected by RLS even when the user is logged in.
+ *
+ * USED BY: All pages and lib files that talk to the database.
  */
 
-import { createClient } from '@supabase/supabase-js'
+import { createBrowserClient } from '@supabase/ssr'
 
-const supabaseUrl     = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+export const supabase = createBrowserClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type MenuCategory = 'Classic Pizzas' | "Roni's Specials" | 'Protein Specials' | 'Drinks' | 'Extras'
+export type MenuCategory =
+  | 'Classic Pizzas'
+  | "Roni's Specials"
+  | 'Protein Specials'
+  | 'Drinks'
+  | 'Extras'
 
 export interface Customization {
-  label: string       // e.g. "Size"
-  options: string[]   // e.g. ["Medium – Rs 1295", "Large – Rs 1495"]
+  label: string
+  options: string[]
   required: boolean
 }
 
@@ -27,7 +36,7 @@ export interface MenuItem {
   id: string
   name: string
   description: string
-  price: number           // in Rs (smallest unit)
+  price: number
   category: MenuCategory | string
   emoji: string
   available: boolean
@@ -39,18 +48,18 @@ export interface CartItem {
   menuItem: MenuItem
   quantity: number
   notes?: string
-  selectedOptions?: Record<string, string>  // e.g. { "Size": "Large – Rs 1495", "Crust": "Deep Pan" }
+  selectedOptions?: Record<string, string>
 }
 
 export type OrderStatus = 'new' | 'preparing' | 'done' | 'cancelled'
 
 export interface Order {
   id: string
-  table_number: string       // "1" | "2" | "3" | "4"
+  table_number: string
   customer_name?: string
   items: CartItem[]
   status: OrderStatus
-  total: number              // in Rs
+  total: number
   notes?: string
   created_at: string
   updated_at: string
