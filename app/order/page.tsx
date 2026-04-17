@@ -1,13 +1,13 @@
 /**
  * FILE: app/order/page.tsx
  * PURPOSE: Customer-facing menu browsing page — the first screen customers see after scanning their QR code.
- *          - Validates the table number (must be 1–4)
+ *          - Validates the table number dynamically (reads active tables from localStorage)
  *          - Blocks ordering if the table already has an active order in progress (checked via Supabase)
  *          - Fetches live menu from Supabase (falls back to MOCK_MENU if unavailable)
  *          - Shows full menu grouped by category with a filter strip at the top
  *          - Tapping an item opens a customization modal (size, crust, extras)
  *          - A floating cart bar appears at the bottom once items are added
- * ROUTE: /order?table=1  (or 2, 3, 4)
+ * ROUTE: /order?table=1  (or any active table number)
  * ACCESSED BY: Customers via QR code scan — no login required
  */
 
@@ -22,24 +22,36 @@ import { useCartStore } from '@/lib/cartStore'
 import { formatPrice } from '@/lib/utils'
 import { resolveItemPrice } from '@/lib/cartStore'
 
-const CAFE_NAME    = "Roni's Pizza"
-const VALID_TABLES = ['1', '2', '3', '4']
+const CAFE_NAME   = "Roni's Pizza"
+const STORAGE_KEY = 'ronis_table_count'
 
 function OrderPageInner() {
   const searchParams = useSearchParams()
-  const router = useRouter()
-  const table = searchParams.get('table') || ''
+  const router       = useRouter()
+  const table        = searchParams.get('table') || ''
 
   const [menu, setMenu]               = useState<MenuItem[]>(MOCK_MENU)
   const [activeCategory, setCategory] = useState('All')
   const [selectedItem, setSelected]   = useState<MenuItem | null>(null)
   const [tableBlocked, setBlocked]    = useState(false)
+  const [validTables, setValidTables] = useState<string[]>([])
+  const [tablesLoaded, setTablesLoaded] = useState(false)
 
   const { addItem, itemCount, setTableNumber } = useCartStore()
 
-  // ── On mount: set table, check if blocked, fetch live menu ──────────────────
+  // ── On mount: compute valid tables from localStorage ─────────────────────────
   useEffect(() => {
-    if (!VALID_TABLES.includes(table)) return
+    const saved = localStorage.getItem(STORAGE_KEY)
+    const count = saved ? parseInt(saved) : 4
+    const computed = Array.from({ length: count }, (_, i) => String(i + 1))
+    setValidTables(computed)
+    setTablesLoaded(true)
+  }, [])
+
+  // ── Once valid tables are known, validate + init ──────────────────────────────
+  useEffect(() => {
+    if (!tablesLoaded) return
+    if (!validTables.includes(table)) return
     setTableNumber(table)
 
     async function init() {
@@ -71,10 +83,20 @@ function OrderPageInner() {
     }
 
     init()
-  }, [table, setTableNumber])
+  }, [table, setTableNumber, validTables, tablesLoaded])
+
+  // ── Guard: wait for localStorage to load ─────────────────────────────────────
+  if (!tablesLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center"
+        style={{ background: 'var(--cream)' }}>
+        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.35)' }}>Loading…</p>
+      </div>
+    )
+  }
 
   // ── Guard: invalid table number ──────────────────────────────────────────────
-  if (!VALID_TABLES.includes(table)) {
+  if (!validTables.includes(table)) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center"
         style={{ background: 'var(--cream)' }}>
@@ -102,29 +124,27 @@ function OrderPageInner() {
   }
 
   // ── Menu display ─────────────────────────────────────────────────────────────
-  const categories  = ['All', ...new Set(menu.map((i) => i.category))]
-  const visible     = activeCategory === 'All' ? menu : menu.filter((i) => i.category === activeCategory)
-  const cartCount   = itemCount()
+  const categories = ['All', ...new Set(menu.map((i) => i.category))]
+  const visible    = activeCategory === 'All' ? menu : menu.filter((i) => i.category === activeCategory)
+  const cartCount  = itemCount()
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--cream)' }}>
 
       {/* Header */}
-      <div className="sticky top-0 z-10 bg-white border-b px-5 pt-5 pb-0"
+      <div className="sticky top-0 z-10 bg-white border-b"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <p className="font-serif text-xl">{CAFE_NAME}</p>
-            <p className="text-xs" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {table}</p>
-          </div>
+        <div className="px-5 pt-5 pb-3">
+          <p className="font-serif text-2xl" style={{ color: 'var(--espresso)' }}>{CAFE_NAME}</p>
+          <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {table}</p>
         </div>
 
-        {/* Category filter */}
-        <div className="flex gap-2 overflow-x-auto pb-3 scrollbar-hide">
+        {/* Category filter strip */}
+        <div className="flex gap-2 px-5 pb-3 overflow-x-auto scrollbar-hide">
           {categories.map((cat) => (
             <button key={cat}
               onClick={() => setCategory(cat)}
-              className="flex-shrink-0 text-xs font-medium px-4 py-1.5 rounded-full border transition-all"
+              className="flex-shrink-0 text-xs px-3 py-1.5 rounded-full border transition-all"
               style={{
                 borderColor: activeCategory === cat ? 'var(--espresso)' : 'rgba(28,15,8,0.12)',
                 background:  activeCategory === cat ? 'var(--espresso)' : '#fff',

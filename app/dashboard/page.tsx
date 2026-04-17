@@ -6,6 +6,7 @@
  *          - Status: new → preparing → done → cleared (cancelled)
  *          - "Clear table" button frees the table after food is collected
  *          - Realtime skips updates we just made (prevents revert bug)
+ *          - Table strip reads from localStorage (synced with QR page)
  * ROUTE: /dashboard
  */
 
@@ -17,7 +18,7 @@ import { formatPrice, STATUS_COLORS, STATUS_LABELS } from '@/lib/utils'
 
 const ORDER_DURATION_MS = 25 * 60 * 1000
 const TABLE_RESET_MS    = 60 * 60 * 1000
-const TABLES            = [1, 2, 3, 4]
+const STORAGE_KEY       = 'ronis_table_count'
 
 function secondsLeft(createdAt: string): number {
   const elapsed = Date.now() - new Date(createdAt).getTime()
@@ -35,9 +36,26 @@ export default function DashboardPage() {
   const [tick, setTick]       = useState(0)
   const [filter, setFilter]   = useState<OrderStatus | 'all'>('all')
   const [loading, setLoading] = useState(true)
+  const [tables, setTables]   = useState<number[]>([])
 
   // Track IDs we just updated so Realtime doesn't revert our optimistic changes
   const pendingUpdates = useRef<Set<string>>(new Set())
+
+  // Load tables from localStorage, keep in sync with QR page (cross-tab)
+  useEffect(() => {
+    const load = () => {
+      const saved = localStorage.getItem(STORAGE_KEY)
+      const count = saved ? parseInt(saved) : 4
+      setTables(Array.from({ length: count }, (_, i) => i + 1))
+    }
+    load()
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY) load()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
 
   // Tick every second for countdown timers
   useEffect(() => {
@@ -196,24 +214,26 @@ export default function DashboardPage() {
           ))}
         </div>
 
-        {/* Table status strip */}
-        <div className="flex gap-3 mb-6">
-          {TABLES.map((t) => {
-            const busy = activeTables.has(String(t))
-            return (
-              <div key={t} className="flex-1 rounded-xl border p-3 text-center"
-                style={{
-                  borderColor: busy ? 'rgba(196,154,108,0.5)' : 'rgba(28,15,8,0.08)',
-                  background:  busy ? 'rgba(196,154,108,0.08)' : '#fff',
-                }}>
-                <p className="text-xs mb-1" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {t}</p>
-                <p className="text-xs font-medium" style={{ color: busy ? 'var(--latte)' : 'var(--sage)' }}>
-                  {busy ? 'Occupied' : 'Free'}
-                </p>
-              </div>
-            )
-          })}
-        </div>
+        {/* Table status strip — dynamic, driven by localStorage */}
+        {tables.length > 0 && (
+          <div className="flex gap-3 mb-6 flex-wrap">
+            {tables.map((t) => {
+              const busy = activeTables.has(String(t))
+              return (
+                <div key={t} className="flex-1 min-w-[80px] rounded-xl border p-3 text-center"
+                  style={{
+                    borderColor: busy ? 'rgba(196,154,108,0.5)' : 'rgba(28,15,8,0.08)',
+                    background:  busy ? 'rgba(196,154,108,0.08)' : '#fff',
+                  }}>
+                  <p className="text-xs mb-1" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {t}</p>
+                  <p className="text-xs font-medium" style={{ color: busy ? 'var(--latte)' : 'var(--sage)' }}>
+                    {busy ? 'Occupied' : 'Free'}
+                  </p>
+                </div>
+              )
+            })}
+          </div>
+        )}
 
         {/* Filter tabs */}
         <div className="flex gap-2 mb-4">
@@ -311,56 +331,37 @@ function OrderCard({
       </div>
 
       {/* Items list */}
-      <div className="px-4 py-3">
+      <div className="px-4 py-3 space-y-1.5 border-b" style={{ borderColor: 'rgba(28,15,8,0.06)' }}>
         {order.items.map((item, i) => (
-          <div key={i} className="flex text-sm py-0.5" style={{ color: 'rgba(28,15,8,0.7)' }}>
-            <span className="font-medium mr-1.5 w-5 shrink-0" style={{ color: 'var(--latte)' }}>
-              {item.quantity}×
+          <div key={i} className="flex justify-between text-sm">
+            <span style={{ color: 'rgba(28,15,8,0.7)' }}>
+              {item.quantity}× {item.menuItem.name}
             </span>
-            <span className="flex-1">{item.menuItem.name}</span>
-            {item.selectedOptions && Object.values(item.selectedOptions).length > 0 && (
-              <span className="text-xs ml-2 shrink-0" style={{ color: 'rgba(28,15,8,0.35)' }}>
-                {Object.values(item.selectedOptions).join(', ')}
-              </span>
-            )}
+            <span style={{ color: 'rgba(28,15,8,0.4)' }}>
+              {formatPrice(item.menuItem.price * item.quantity)}
+            </span>
           </div>
         ))}
-        {order.notes && (
-          <p className="text-xs mt-2 italic px-2 py-1.5 rounded-lg"
-            style={{ background: 'var(--cream)', color: 'rgba(28,15,8,0.5)' }}>
-            "{order.notes}"
-          </p>
-        )}
       </div>
 
-      {/* Footer: total + action button */}
-      <div className="px-4 py-3 border-t flex items-center gap-2"
-        style={{ borderColor: 'rgba(28,15,8,0.06)' }}>
-        <span className="flex-1 text-xs font-medium">{formatPrice(order.total)}</span>
-
-        {order.status === 'new' && (
-          <button onClick={() => onAdvance(order.id)}
-            className="text-xs font-medium px-3 py-1.5 rounded-lg text-white"
-            style={{ background: 'var(--espresso)' }}>
-            Start prep
-          </button>
-        )}
-
-        {order.status === 'preparing' && (
-          <button onClick={() => onAdvance(order.id)}
-            className="text-xs font-medium px-3 py-1.5 rounded-lg text-white"
-            style={{ background: 'var(--sage)' }}>
-            Mark ready
-          </button>
-        )}
-
-        {order.status === 'done' && (
-          <button onClick={() => onClear(order.id)}
-            className="text-xs font-medium px-3 py-1.5 rounded-lg border transition-all hover:bg-red-50"
-            style={{ borderColor: 'rgba(28,15,8,0.2)', color: 'rgba(28,15,8,0.6)' }}>
-            Clear table ✕
-          </button>
-        )}
+      {/* Footer */}
+      <div className="px-4 py-3 flex items-center justify-between">
+        <span className="text-sm font-medium">{formatPrice(order.total)}</span>
+        <div className="flex gap-2">
+          {order.status !== 'done' ? (
+            <button onClick={() => onAdvance(order.id)}
+              className="text-xs font-medium px-3 py-1.5 rounded-lg text-white"
+              style={{ background: order.status === 'new' ? 'var(--latte)' : 'var(--sage)' }}>
+              {order.status === 'new' ? 'Start preparing' : 'Mark ready'}
+            </button>
+          ) : (
+            <button onClick={() => onClear(order.id)}
+              className="text-xs font-medium px-3 py-1.5 rounded-lg border"
+              style={{ borderColor: 'rgba(28,15,8,0.15)', color: 'rgba(28,15,8,0.5)' }}>
+              Clear table
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

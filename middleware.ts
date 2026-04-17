@@ -1,10 +1,4 @@
-/**
- * FILE: middleware.ts  (root of your project, next to package.json)
- * PURPOSE: Refreshes the Supabase auth session cookie on every request.
- *          Without this, the session can expire mid-visit and update calls
- *          silently fail RLS even though the user appears logged in.
- */
-
+// middleware.ts
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
@@ -32,15 +26,27 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // Refreshes the session if expired — do not remove
-  await supabase.auth.getUser()
+  const { data: { user } } = await supabase.auth.getUser()  // ← was just called, result discarded
+
+  const { pathname } = request.nextUrl
+  const isLoginPage = pathname === '/dashboard/login'
+  const isDashboard = pathname.startsWith('/dashboard')
+
+  // Unauthenticated user trying to access dashboard → send to login
+  if (isDashboard && !isLoginPage && !user) {
+    return NextResponse.redirect(new URL('/dashboard/login', request.url))
+  }
+
+  // Authenticated user hitting login page → send to dashboard
+  if (isLoginPage && user) {
+    return NextResponse.redirect(new URL('/dashboard', request.url))
+  }
 
   return response
 }
 
 export const config = {
   matcher: [
-    // Run on all routes except static files and images
     '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }
