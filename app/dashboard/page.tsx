@@ -3,19 +3,18 @@
  * PURPOSE: Main dashboard for Roni's Pizza staff.
  *          - Live order cards with 25-minute countdown progress bar
  *          - Supabase Realtime — new orders appear instantly
- *          - Status: new → preparing → done → (hidden from dashboard)
- *          - "Clear table" hides the card from the UI WITHOUT touching the DB
- *            so the order stays as "done" in history, not "cancelled"
- *          - Realtime skips updates we just made (prevents revert bug)
- *          - Table strip reads from localStorage (synced with QR page)
+ *          - Status: new → preparing → done → (dismissed from dashboard)
+ *          - "Clear table" hides the card from dashboard WITHOUT touching DB
+ *            so the order stays 'done' in history (not 'cancelled')
+ *          - Cleared IDs persist in localStorage with a 24-hour TTL so
+ *            cleared orders don't reappear after a page refresh
  * ROUTE: /dashboard
  *
- * FIX — "Clear table" was setting status to 'cancelled', which corrupted
- *        order history and made it look like the order was never fulfilled.
- *        Now clearTable() only removes the card from the local UI state.
- *        The order remains 'done' in Supabase and shows correctly in History.
- *        A `clearedIds` ref tracks which done orders have been dismissed so
- *        Realtime updates don't accidentally bring them back.
+ * FIX: clearedIds was stored in a useRef (in-memory only), so dismissed
+ *      'done' orders reappeared every time the page was refreshed because
+ *      the initial Supabase fetch brought them back.
+ *      Now cleared IDs are saved to localStorage under 'ronis_cleared_orders'
+ *      as { id: timestamp } pairs. On load, IDs older than 24 h are pruned.
  */
 
 'use client'
@@ -24,9 +23,46 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase, Order, OrderStatus } from '@/lib/supabase'
 import { formatPrice, STATUS_COLORS, STATUS_LABELS } from '@/lib/utils'
 
-const ORDER_DURATION_MS = 25 * 60 * 1000
-const TABLE_RESET_MS    = 60 * 60 * 1000
-const STORAGE_KEY       = 'ronis_table_count'
+const ORDER_DURATION_MS  = 25 * 60 * 1000
+const TABLE_RESET_MS     = 60 * 60 * 1000
+const STORAGE_KEY        = 'ronis_table_count'
+const CLEARED_KEY        = 'ronis_cleared_orders'   // localStorage key for dismissed IDs
+const CLEARED_TTL_MS     = 24 * 60 * 60 * 1000      // prune entries older than 24 h
+
+// ── Cleared-IDs helpers ───────────────────────────────────────────────────────
+
+/** Load cleared order IDs from localStorage, pruning any older than 24 h. */
+function loadClearedIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(CLEARED_KEY)
+    if (!raw) return new Set()
+    const map: Record<string, number> = JSON.parse(raw)
+    const now = Date.now()
+    const fresh: Record<string, number> = {}
+    for (const [id, ts] of Object.entries(map)) {
+      if (now - ts < CLEARED_TTL_MS) fresh[id] = ts
+    }
+    // Persist pruned version back
+    localStorage.setItem(CLEARED_KEY, JSON.stringify(fresh))
+    return new Set(Object.keys(fresh))
+  } catch {
+    return new Set()
+  }
+}
+
+/** Persist a newly cleared ID to localStorage. */
+function persistClearedId(id: string) {
+  try {
+    const raw = localStorage.getItem(CLEARED_KEY)
+    const map: Record<string, number> = raw ? JSON.parse(raw) : {}
+    map[id] = Date.now()
+    localStorage.setItem(CLEARED_KEY, JSON.stringify(map))
+  } catch {
+    // localStorage unavailable — silently ignore
+  }
+}
+
+// ── Timer helpers ─────────────────────────────────────────────────────────────
 
 function secondsLeft(createdAt: string): number {
   const elapsed = Date.now() - new Date(createdAt).getTime()
@@ -39,6 +75,8 @@ function fmtCountdown(secs: number): string {
   return `${m}:${s}`
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function DashboardPage() {
   const [orders, setOrders]   = useState<Order[]>([])
   const [tick, setTick]       = useState(0)
@@ -49,11 +87,10 @@ export default function DashboardPage() {
   // Track IDs we just updated so Realtime doesn't revert our optimistic changes
   const pendingUpdates = useRef<Set<string>>(new Set())
 
-  // FIX: Track IDs the staff has cleared from the dashboard view.
-  //      These orders stay 'done' in the DB — we just don't show them anymore.
+  // Cleared IDs — loaded from localStorage on mount, persisted on each clear
   const clearedIds = useRef<Set<string>>(new Set())
 
-  // Load tables from localStorage, keep in sync with QR page (cross-tab)
+  // Load tables from localStorage
   useEffect(() => {
     const load = () => {
       const saved = localStorage.getItem(STORAGE_KEY)
@@ -64,6 +101,11 @@ export default function DashboardPage() {
     const onStorage = (e: StorageEvent) => { if (e.key === STORAGE_KEY) load() }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  // Load persisted cleared IDs on mount (before fetching orders)
+  useEffect(() => {
+    clearedIds.current = loadClearedIds()
   }, [])
 
   // Tick every second for countdown timers
@@ -80,6 +122,7 @@ export default function DashboardPage() {
         Date.now() - new Date(o.created_at).getTime() > TABLE_RESET_MS,
     )
     if (expired.length > 0) {
+      expired.forEach((o) => persistClearedId(o.id))
       setOrders((prev) => prev.filter((o) => !expired.find((e) => e.id === o.id)))
     }
   }, [tick, orders])
@@ -92,7 +135,13 @@ export default function DashboardPage() {
       .not('status', 'eq', 'cancelled')
       .order('created_at', { ascending: false })
       .then(({ data, error }) => {
-        if (!error && data) setOrders(data as Order[])
+        if (!error && data) {
+          // Filter out any orders the staff already dismissed this session
+          const visible = (data as Order[]).filter(
+            (o) => !clearedIds.current.has(o.id),
+          )
+          setOrders(visible)
+        }
         setLoading(false)
       })
 
@@ -104,13 +153,13 @@ export default function DashboardPage() {
         (payload) => {
           const id = (payload.new as Order)?.id || (payload.old as Order)?.id
 
-          // Skip if we triggered this update (prevents revert bug)
+          // Skip our own optimistic updates
           if (id && pendingUpdates.current.has(id)) {
             pendingUpdates.current.delete(id)
             return
           }
 
-          // Skip if staff already cleared this card from the view
+          // Skip orders the staff already cleared from the dashboard
           if (id && clearedIds.current.has(id)) return
 
           if (payload.eventType === 'INSERT') {
@@ -159,18 +208,13 @@ export default function DashboardPage() {
   }
 
   /**
-   * FIX: Clear table — removes the card from the dashboard view ONLY.
-   *
-   * Previously this set status to 'cancelled', which:
-   *   • Made the order show as "Cancelled" in History instead of "Ready/Done"
-   *   • Corrupted revenue stats (cancelled orders were excluded)
-   *   • Confused the customer's live order tracker
-   *
-   * Now we just hide the card locally. The order stays 'done' in Supabase.
-   * clearedIds prevents Realtime from bringing the card back.
+   * Clear table — removes card from dashboard view only.
+   * Order stays 'done' in DB so History shows it correctly.
+   * Cleared ID is saved to localStorage so it doesn't come back on refresh.
    */
   const clearTable = (id: string) => {
     clearedIds.current.add(id)
+    persistClearedId(id)                              // ← survives page refresh
     setOrders((prev) => prev.filter((o) => o.id !== id))
   }
 
@@ -310,7 +354,7 @@ function OrderCard({
     <div className="bg-white rounded-xl border overflow-hidden"
       style={{ borderColor: overdue ? 'rgba(192,57,43,0.4)' : 'rgba(28,15,8,0.08)' }}>
 
-      {/* Countdown progress bar — drains over 25 minutes */}
+      {/* Countdown progress bar */}
       {order.status !== 'done' && (
         <div className="h-1 w-full" style={{ background: 'rgba(28,15,8,0.06)' }}>
           <div className="h-full transition-all duration-1000"
