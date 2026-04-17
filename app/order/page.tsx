@@ -8,11 +8,9 @@
  *          - Item modal with quantity stepper + customization options
  *          - Floating cart bar
  *
- * FIXES:
- *   - Quantity stepper in modal: customers can add 1–9 of any item
- *     (especially useful for drinks/extras with no size options)
- *   - Modal "Add to cart" button price updates live as size is selected
- *   - Button label changes to "Select required options" when not ready
+ * CATEGORY ORDER: Pizzas first, Drinks and Extras last.
+ *   Classic Pizzas → Roni's Specials → Protein Specials → Drinks → Extras
+ *   Any unknown future categories are appended alphabetically after Extras.
  */
 
 'use client'
@@ -27,6 +25,34 @@ import { formatPrice } from '@/lib/utils'
 
 const CAFE_NAME   = "Roni's Pizza"
 const STORAGE_KEY = 'ronis_table_count'
+
+/**
+ * Desired display order for category tabs and menu grid.
+ * Categories not in this list are appended at the end, sorted alphabetically.
+ */
+const CATEGORY_ORDER = [
+  'Classic Pizzas',
+  "Roni's Specials",
+  'Protein Specials',
+  'Drinks',
+  'Extras',
+]
+
+/** Sort a list of category names according to CATEGORY_ORDER. */
+function sortCategories(cats: string[]): string[] {
+  return [...cats].sort((a, b) => {
+    const ia = CATEGORY_ORDER.indexOf(a)
+    const ib = CATEGORY_ORDER.indexOf(b)
+    // Both known → use defined order
+    if (ia !== -1 && ib !== -1) return ia - ib
+    // Only a known → a first
+    if (ia !== -1) return -1
+    // Only b known → b first
+    if (ib !== -1) return 1
+    // Both unknown → alphabetical
+    return a.localeCompare(b)
+  })
+}
 
 function OrderPageInner() {
   const searchParams = useSearchParams()
@@ -72,7 +98,6 @@ function OrderPageInner() {
         .from('menu_items')
         .select('*')
         .eq('available', true)
-        .order('category')
 
       if (!error && menuData && menuData.length > 0) {
         setMenu(menuData as MenuItem[])
@@ -82,6 +107,7 @@ function OrderPageInner() {
     init()
   }, [table, setTableNumber, validTables, tablesLoaded])
 
+  // ── Guards ────────────────────────────────────────────────────────────────────
   if (!tablesLoaded) {
     return (
       <div className="min-h-screen flex items-center justify-center"
@@ -117,9 +143,29 @@ function OrderPageInner() {
     )
   }
 
-  const categories = ['All', ...new Set(menu.map((i) => i.category))]
-  const visible    = activeCategory === 'All' ? menu : menu.filter((i) => i.category === activeCategory)
-  const cartCount  = itemCount()
+  // ── Sorted categories and visible items ───────────────────────────────────────
+  const rawCategories = [...new Set(menu.map((i) => i.category))]
+  const sortedCategories = sortCategories(rawCategories)
+  const categories = ['All', ...sortedCategories]
+
+  // Sort the menu items themselves to match category order so the grid
+  // reads top-to-bottom in the correct sequence when "All" is selected.
+  const sortedMenu = [...menu].sort((a, b) => {
+    const ia = CATEGORY_ORDER.indexOf(a.category)
+    const ib = CATEGORY_ORDER.indexOf(b.category)
+    if (ia !== ib) {
+      if (ia === -1 && ib === -1) return a.category.localeCompare(b.category)
+      if (ia === -1) return 1
+      if (ib === -1) return -1
+      return ia - ib
+    }
+    return a.name.localeCompare(b.name)
+  })
+
+  const visible   = activeCategory === 'All'
+    ? sortedMenu
+    : sortedMenu.filter((i) => i.category === activeCategory)
+  const cartCount = itemCount()
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--cream)' }}>
@@ -131,6 +177,8 @@ function OrderPageInner() {
           <p className="font-serif text-2xl" style={{ color: 'var(--espresso)' }}>{CAFE_NAME}</p>
           <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {table}</p>
         </div>
+
+        {/* Category filter strip — sorted by CATEGORY_ORDER */}
         <div className="flex gap-2 px-5 pb-3 overflow-x-auto scrollbar-hide">
           {categories.map((cat) => (
             <button key={cat}
@@ -147,7 +195,7 @@ function OrderPageInner() {
         </div>
       </div>
 
-      {/* Menu grid */}
+      {/* Menu grid — items already sorted by category order */}
       <div className="flex-1 p-4 pb-32 grid gap-3"
         style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
         {visible.map((item) => (
@@ -191,7 +239,6 @@ function OrderPageInner() {
           item={selectedItem}
           onClose={() => setSelected(null)}
           onAdd={(options, qty) => {
-            // addItem merges duplicates correctly; call once with qty baked in
             addItem(selectedItem, options, undefined, qty)
             setSelected(null)
           }}
@@ -269,7 +316,7 @@ function ItemModal({
           </div>
         ))}
 
-        {/* ── Quantity stepper — always shown ──────────────────────────────── */}
+        {/* Quantity stepper */}
         <div className="flex items-center justify-between py-3 mb-4 border-t border-b"
           style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
           <p className="text-sm font-medium" style={{ color: 'var(--espresso)' }}>Quantity</p>
