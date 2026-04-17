@@ -3,11 +3,19 @@
  * PURPOSE: Main dashboard for Roni's Pizza staff.
  *          - Live order cards with 25-minute countdown progress bar
  *          - Supabase Realtime — new orders appear instantly
- *          - Status: new → preparing → done → cleared (cancelled)
- *          - "Clear table" button frees the table after food is collected
+ *          - Status: new → preparing → done → (hidden from dashboard)
+ *          - "Clear table" hides the card from the UI WITHOUT touching the DB
+ *            so the order stays as "done" in history, not "cancelled"
  *          - Realtime skips updates we just made (prevents revert bug)
  *          - Table strip reads from localStorage (synced with QR page)
  * ROUTE: /dashboard
+ *
+ * FIX — "Clear table" was setting status to 'cancelled', which corrupted
+ *        order history and made it look like the order was never fulfilled.
+ *        Now clearTable() only removes the card from the local UI state.
+ *        The order remains 'done' in Supabase and shows correctly in History.
+ *        A `clearedIds` ref tracks which done orders have been dismissed so
+ *        Realtime updates don't accidentally bring them back.
  */
 
 'use client'
@@ -41,6 +49,10 @@ export default function DashboardPage() {
   // Track IDs we just updated so Realtime doesn't revert our optimistic changes
   const pendingUpdates = useRef<Set<string>>(new Set())
 
+  // FIX: Track IDs the staff has cleared from the dashboard view.
+  //      These orders stay 'done' in the DB — we just don't show them anymore.
+  const clearedIds = useRef<Set<string>>(new Set())
+
   // Load tables from localStorage, keep in sync with QR page (cross-tab)
   useEffect(() => {
     const load = () => {
@@ -49,10 +61,7 @@ export default function DashboardPage() {
       setTables(Array.from({ length: count }, (_, i) => i + 1))
     }
     load()
-
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY) load()
-    }
+    const onStorage = (e: StorageEvent) => { if (e.key === STORAGE_KEY) load() }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
   }, [])
@@ -68,7 +77,7 @@ export default function DashboardPage() {
     const expired = orders.filter(
       (o) =>
         o.status === 'done' &&
-        Date.now() - new Date(o.created_at).getTime() > TABLE_RESET_MS
+        Date.now() - new Date(o.created_at).getTime() > TABLE_RESET_MS,
     )
     if (expired.length > 0) {
       setOrders((prev) => prev.filter((o) => !expired.find((e) => e.id === o.id)))
@@ -101,6 +110,9 @@ export default function DashboardPage() {
             return
           }
 
+          // Skip if staff already cleared this card from the view
+          if (id && clearedIds.current.has(id)) return
+
           if (payload.eventType === 'INSERT') {
             const incoming = payload.new as Order
             if (incoming.status !== 'cancelled') {
@@ -113,14 +125,14 @@ export default function DashboardPage() {
               setOrders((prev) => prev.filter((o) => o.id !== updated.id))
             } else {
               setOrders((prev) =>
-                prev.map((o) => (o.id === updated.id ? updated : o))
+                prev.map((o) => (o.id === updated.id ? updated : o)),
               )
             }
           }
           if (payload.eventType === 'DELETE') {
             setOrders((prev) => prev.filter((o) => o.id !== (payload.old as Order).id))
           }
-        }
+        },
       )
       .subscribe()
 
@@ -135,7 +147,7 @@ export default function DashboardPage() {
 
     pendingUpdates.current.add(id)
     setOrders((prev) =>
-      prev.map((o) => (o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o))
+      prev.map((o) => (o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o)),
     )
 
     const { error } = await supabase.from('orders').update({ status: next }).eq('id', id)
@@ -146,18 +158,20 @@ export default function DashboardPage() {
     }
   }
 
-  // Clear table: marks as cancelled and removes from active view
-  const clearTable = async (id: string) => {
-    pendingUpdates.current.add(id)
+  /**
+   * FIX: Clear table — removes the card from the dashboard view ONLY.
+   *
+   * Previously this set status to 'cancelled', which:
+   *   • Made the order show as "Cancelled" in History instead of "Ready/Done"
+   *   • Corrupted revenue stats (cancelled orders were excluded)
+   *   • Confused the customer's live order tracker
+   *
+   * Now we just hide the card locally. The order stays 'done' in Supabase.
+   * clearedIds prevents Realtime from bringing the card back.
+   */
+  const clearTable = (id: string) => {
+    clearedIds.current.add(id)
     setOrders((prev) => prev.filter((o) => o.id !== id))
-
-    const { error } = await supabase.from('orders').update({ status: 'cancelled' }).eq('id', id)
-    if (error) {
-      console.error('Failed to clear table:', error)
-      pendingUpdates.current.delete(id)
-      const { data } = await supabase.from('orders').select('*').eq('id', id).single()
-      if (data) setOrders((prev) => [data as Order, ...prev])
-    }
   }
 
   const filtered     = filter === 'all' ? orders : orders.filter((o) => o.status === filter)
@@ -168,7 +182,7 @@ export default function DashboardPage() {
   const activeTables = new Set(
     orders
       .filter((o) => o.status === 'new' || o.status === 'preparing')
-      .map((o) => o.table_number)
+      .map((o) => o.table_number),
   )
 
   const FILTER_TABS: { label: string; value: OrderStatus | 'all' }[] = [
@@ -190,56 +204,56 @@ export default function DashboardPage() {
               {newCount} new order{newCount !== 1 ? 's' : ''}
             </span>
           )}
-          <span className="text-sm" style={{ color: 'rgba(28,15,8,0.35)' }}>
-            {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          <span className="text-xs tabular-nums" style={{ color: 'rgba(28,15,8,0.3)' }}>
+            {new Date().toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit' })}
           </span>
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-6 space-y-6">
 
-        {/* Stats */}
-        <div className="grid grid-cols-4 gap-3 mb-6">
+        {/* Stats row */}
+        <div className="grid grid-cols-4 gap-4">
           {[
             { label: 'Orders today', value: orders.length },
             { label: 'In progress',  value: prepCount },
             { label: 'Ready',        value: doneCount },
             { label: 'Revenue',      value: formatPrice(revenue) },
           ].map((s) => (
-            <div key={s.label} className="bg-white rounded-xl p-4 border"
+            <div key={s.label} className="bg-white rounded-xl border p-5"
               style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
-              <p className="text-xs mb-1.5" style={{ color: 'rgba(28,15,8,0.4)' }}>{s.label}</p>
+              <p className="text-xs mb-1" style={{ color: 'rgba(28,15,8,0.4)' }}>{s.label}</p>
               <p className="text-2xl font-medium">{s.value}</p>
             </div>
           ))}
         </div>
 
-        {/* Table status strip — dynamic, driven by localStorage */}
-        {tables.length > 0 && (
-          <div className="flex gap-3 mb-6 flex-wrap">
-            {tables.map((t) => {
-              const busy = activeTables.has(String(t))
-              return (
-                <div key={t} className="flex-1 min-w-[80px] rounded-xl border p-3 text-center"
-                  style={{
-                    borderColor: busy ? 'rgba(196,154,108,0.5)' : 'rgba(28,15,8,0.08)',
-                    background:  busy ? 'rgba(196,154,108,0.08)' : '#fff',
-                  }}>
-                  <p className="text-xs mb-1" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {t}</p>
-                  <p className="text-xs font-medium" style={{ color: busy ? 'var(--latte)' : 'var(--sage)' }}>
-                    {busy ? 'Occupied' : 'Free'}
-                  </p>
-                </div>
-              )
-            })}
-          </div>
-        )}
+        {/* Table occupancy strip */}
+        <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${tables.length}, 1fr)` }}>
+          {tables.map((n) => {
+            const occupied = activeTables.has(String(n))
+            return (
+              <div key={n} className="rounded-xl border py-3 text-center transition-all"
+                style={{
+                  borderColor: occupied ? 'rgba(28,15,8,0.15)' : 'rgba(28,15,8,0.06)',
+                  background:  occupied ? 'rgba(28,15,8,0.04)' : '#fff',
+                }}>
+                <p className="text-xs mb-0.5" style={{ color: 'rgba(28,15,8,0.35)' }}>Table {n}</p>
+                <p className="text-sm font-medium"
+                  style={{ color: occupied ? 'var(--latte)' : 'rgba(28,15,8,0.35)' }}>
+                  {occupied ? 'Occupied' : 'Free'}
+                </p>
+              </div>
+            )
+          })}
+        </div>
 
         {/* Filter tabs */}
-        <div className="flex gap-2 mb-4">
+        <div className="flex gap-2">
           {FILTER_TABS.map((tab) => (
-            <button key={tab.value} onClick={() => setFilter(tab.value)}
-              className="px-3 py-1.5 rounded-full text-xs border transition-all"
+            <button key={tab.value}
+              onClick={() => setFilter(tab.value)}
+              className="text-xs px-4 py-1.5 rounded-full border transition-all"
               style={{
                 background:  filter === tab.value ? 'var(--espresso)' : '#fff',
                 color:       filter === tab.value ? '#fff' : 'rgba(28,15,8,0.5)',

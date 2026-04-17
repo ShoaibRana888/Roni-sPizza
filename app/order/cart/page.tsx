@@ -1,25 +1,23 @@
 /**
  * FILE: app/order/cart/page.tsx
- * PURPOSE: Customer cart review page — the step between browsing and confirming.
- *          - Shows all items with correct size-based pricing (e.g. Large = Rs 2395)
- *          - Allows quantity adjustments and item removal
- *          - Optional customer name field (shown on dashboard order card)
- *          - "Place order" submits the order and locks the table for 1 hour
- * ROUTE: /order/cart?table=1
- * ACCESSED BY: Customers (no login required)
+ * PURPOSE: Customer cart review page.
+ *          - Shows all items with correct size-based pricing
+ *          - Quantity adjustments and item removal
+ *          - Optional customer name field
+ *          - "Place order" submits to Supabase
  *
- * PRICE FIX: Uses resolveItemPrice() from cartStore to extract the actual price
- *            from the selected size option (e.g. "Large – Rs 2395" → 2395)
- *            instead of always showing the base menu price.
+ * FIX — Duplicate orders: placeOrder now uses a `submitting` state flag.
+ *   The button is disabled immediately on first tap and shows "Placing order…"
+ *   so a double-tap or slow network cannot fire two inserts.
  *
- * VARIANT FIX: removeItem and updateQuantity now pass selectedOptions so the
- *              correct size variant is targeted (not just matched by item ID).
+ * FIX — Variant targeting: removeItem and updateQuantity pass selectedOptions
+ *   so the correct size variant is removed/updated.
  */
 
 'use client'
 
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Suspense } from 'react'
+import { useState, Suspense } from 'react'
 import { useCartStore, resolveItemPrice } from '@/lib/cartStore'
 import { formatPrice } from '@/lib/utils'
 import { supabase } from '../../../lib/supabase'
@@ -31,8 +29,13 @@ function CartPageInner() {
 
   const { items, updateQuantity, removeItem, total, itemCount, customerName, setCustomerName } = useCartStore()
 
+  // ── Duplicate-order guard ─────────────────────────────────────────────────────
+  const [submitting, setSubmitting] = useState(false)
+
   const placeOrder = async () => {
-    if (items.length === 0) return
+    if (items.length === 0 || submitting) return
+    setSubmitting(true)                        // disable button immediately
+
     const { data, error } = await supabase.from('orders').insert({
       table_number: table,
       customer_name: customerName || null,
@@ -40,9 +43,16 @@ function CartPageInner() {
       total: total(),
       status: 'new',
     }).select().single()
-    if (error) { console.error(error); return }
+
+    if (error) {
+      console.error('Order failed:', error)
+      setSubmitting(false)                     // re-enable on failure so user can retry
+      return
+    }
+
     sessionStorage.setItem(`ronis_table_${table}_order_time`, String(Date.now()))
     router.push(`/order/confirm?table=${table}&orderId=${data.id}`)
+    // Note: don't setSubmitting(false) here — page navigates away
   }
 
   // ── Empty cart ────────────────────────────────────────────────────────────────
@@ -78,9 +88,7 @@ function CartPageInner() {
 
         {/* Cart items */}
         {items.map((cartItem, i) => {
-          // Resolve the correct price based on selected size option
           const itemPrice = resolveItemPrice(cartItem)
-
           return (
             <div key={i} className="bg-white rounded-2xl border p-4 flex gap-3"
               style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
@@ -88,7 +96,6 @@ function CartPageInner() {
               <div className="flex-1 min-w-0">
                 <p className="font-medium text-sm">{cartItem.menuItem.name}</p>
 
-                {/* Selected options (e.g. "Large – Rs 2395 · Deep Pan") */}
                 {cartItem.selectedOptions && Object.keys(cartItem.selectedOptions).length > 0 && (
                   <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>
                     {Object.values(cartItem.selectedOptions).join(' · ')}
@@ -101,19 +108,18 @@ function CartPageInner() {
                   </p>
                 )}
 
-                {/* Price — uses resolved size price, multiplied by quantity */}
                 <p className="text-sm mt-1 font-medium" style={{ color: 'var(--latte)' }}>
                   {formatPrice(itemPrice * cartItem.quantity)}
                 </p>
               </div>
 
               <div className="flex flex-col items-end gap-2">
-                {/* FIX: pass selectedOptions so the correct variant is removed */}
+                {/* Remove — passes selectedOptions to target correct variant */}
                 <button
                   onClick={() => removeItem(cartItem.menuItem.id, cartItem.selectedOptions)}
                   className="text-xs" style={{ color: 'rgba(28,15,8,0.3)' }}>✕</button>
 
-                {/* Quantity stepper — FIX: pass selectedOptions for correct variant */}
+                {/* Quantity stepper */}
                 <div className="flex items-center gap-2 border rounded-lg px-2 py-1"
                   style={{ borderColor: 'rgba(28,15,8,0.12)' }}>
                   <button
@@ -140,7 +146,7 @@ function CartPageInner() {
         </div>
       </div>
 
-      {/* Fixed bottom bar — total uses resolveItemPrice via store's total() */}
+      {/* Fixed bottom bar */}
       <div className="fixed bottom-0 left-0 right-0 p-5 bg-white border-t space-y-3"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <div className="flex justify-between text-sm">
@@ -149,21 +155,28 @@ function CartPageInner() {
           </span>
           <span className="font-medium">{formatPrice(total())}</span>
         </div>
+
+        {/* FIX: disabled + text change while submitting prevents double-insert */}
         <button
           onClick={placeOrder}
-          className="w-full py-3 rounded-xl text-white text-sm font-medium"
-          style={{ background: 'var(--espresso)' }}>
-          Place order
+          disabled={submitting}
+          className="w-full py-4 rounded-2xl text-white font-medium text-sm transition-all"
+          style={{
+            background: submitting ? 'rgba(28,15,8,0.3)' : 'var(--espresso)',
+          }}>
+          {submitting
+            ? 'Placing order…'
+            : `Place order · ${formatPrice(total())}`}
         </button>
+
+        <p className="text-center text-xs" style={{ color: 'rgba(28,15,8,0.3)' }}>
+          Pay at the counter when your order is ready
+        </p>
       </div>
     </div>
   )
 }
 
 export default function CartPage() {
-  return (
-    <Suspense>
-      <CartPageInner />
-    </Suspense>
-  )
+  return <Suspense><CartPageInner /></Suspense>
 }

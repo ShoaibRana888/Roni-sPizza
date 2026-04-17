@@ -1,17 +1,18 @@
 /**
  * FILE: app/order/page.tsx
- * PURPOSE: Customer-facing menu browsing page — the first screen customers see after scanning their QR code.
- *          - Validates the table number dynamically (reads active tables from localStorage)
- *          - Blocks ordering if the table already has an active order in progress (checked via Supabase)
- *          - Fetches live menu from Supabase (falls back to MOCK_MENU if unavailable)
- *          - Shows full menu grouped by category with a filter strip at the top
- *          - Tapping an item opens a customization modal (size, crust, extras)
- *          - A floating cart bar appears at the bottom once items are added
- * ROUTE: /order?table=1  (or any active table number)
- * ACCESSED BY: Customers via QR code scan — no login required
+ * PURPOSE: Customer-facing menu browsing page.
+ *          - Validates table number from localStorage
+ *          - Blocks ordering if table already has an active order
+ *          - Fetches live menu from Supabase (falls back to MOCK_MENU)
+ *          - Category filter strip + item grid
+ *          - Item modal with quantity stepper + customization options
+ *          - Floating cart bar
  *
- * PRICE FIX: ItemModal now derives the display price from the selected Size option
- *            (e.g. "Large – Rs 1995" → Rs 1,995) instead of always showing item.price.
+ * FIXES:
+ *   - Quantity stepper in modal: customers can add 1–9 of any item
+ *     (especially useful for drinks/extras with no size options)
+ *   - Modal "Add to cart" button price updates live as size is selected
+ *   - Button label changes to "Select required options" when not ready
  */
 
 'use client'
@@ -57,7 +58,6 @@ function OrderPageInner() {
     setTableNumber(table)
 
     async function init() {
-      // 1. Check if table already has an active order
       const { data: activeOrder } = await supabase
         .from('orders')
         .select('id')
@@ -66,58 +66,57 @@ function OrderPageInner() {
         .limit(1)
         .maybeSingle()
 
-      if (activeOrder) {
-        setBlocked(true)
-        return
-      }
+      if (activeOrder) { setBlocked(true); return }
 
-      // 2. Fetch live menu
-      const { data, error } = await supabase
+      const { data: menuData, error } = await supabase
         .from('menu_items')
         .select('*')
         .eq('available', true)
         .order('category')
 
-      if (!error && data && data.length > 0) {
-        setMenu(data)
+      if (!error && menuData && menuData.length > 0) {
+        setMenu(menuData as MenuItem[])
       }
     }
 
     init()
-  }, [tablesLoaded, table, setTableNumber, validTables])
+  }, [table, setTableNumber, validTables, tablesLoaded])
 
-  // ── Invalid table ─────────────────────────────────────────────────────────────
-  if (tablesLoaded && !validTables.includes(table)) {
+  if (!tablesLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center"
+        style={{ background: 'var(--cream)' }}>
+        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.35)' }}>Loading…</p>
+      </div>
+    )
+  }
+
+  if (!validTables.includes(table)) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center"
         style={{ background: 'var(--cream)' }}>
         <span className="text-5xl mb-4">🍕</span>
-        <p className="font-serif text-2xl mb-2">{CAFE_NAME}</p>
-        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.45)' }}>
-          Table not found. Please scan the QR code at your table.
+        <h1 className="font-serif text-2xl mb-2">Invalid table</h1>
+        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.5)' }}>
+          Please scan the QR code on your table.
         </p>
       </div>
     )
   }
 
-  // ── Table blocked ─────────────────────────────────────────────────────────────
   if (tableBlocked) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center"
         style={{ background: 'var(--cream)' }}>
         <span className="text-5xl mb-4">⏳</span>
-        <p className="font-serif text-2xl mb-2">Order in progress</p>
-        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.45)' }}>
-          This table already has an active order.
-        </p>
-        <p className="text-sm mt-1" style={{ color: 'rgba(28,15,8,0.35)' }}>
-          Please wait for it to complete.
+        <h1 className="font-serif text-2xl mb-2">Order in progress</h1>
+        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.5)' }}>
+          This table already has an active order. Please wait for it to complete.
         </p>
       </div>
     )
   }
 
-  // ── Menu display ─────────────────────────────────────────────────────────────
   const categories = ['All', ...new Set(menu.map((i) => i.category))]
   const visible    = activeCategory === 'All' ? menu : menu.filter((i) => i.category === activeCategory)
   const cartCount  = itemCount()
@@ -132,8 +131,6 @@ function OrderPageInner() {
           <p className="font-serif text-2xl" style={{ color: 'var(--espresso)' }}>{CAFE_NAME}</p>
           <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {table}</p>
         </div>
-
-        {/* Category filter strip */}
         <div className="flex gap-2 px-5 pb-3 overflow-x-auto scrollbar-hide">
           {categories.map((cat) => (
             <button key={cat}
@@ -150,7 +147,7 @@ function OrderPageInner() {
         </div>
       </div>
 
-      {/* Menu items */}
+      {/* Menu grid */}
       <div className="flex-1 p-4 pb-32 grid gap-3"
         style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
         {visible.map((item) => (
@@ -188,13 +185,14 @@ function OrderPageInner() {
         </div>
       )}
 
-      {/* Item customization modal */}
+      {/* Item modal */}
       {selectedItem && (
         <ItemModal
           item={selectedItem}
           onClose={() => setSelected(null)}
-          onAdd={(options) => {
-            addItem(selectedItem, options)
+          onAdd={(options, qty) => {
+            // addItem merges duplicates correctly; call once with qty baked in
+            addItem(selectedItem, options, undefined, qty)
             setSelected(null)
           }}
         />
@@ -211,23 +209,16 @@ function ItemModal({
 }: {
   item: MenuItem
   onClose: () => void
-  onAdd: (options: Record<string, string>) => void
+  onAdd: (options: Record<string, string>, quantity: number) => void
 }) {
   const [selections, setSelections] = useState<Record<string, string>>({})
+  const [quantity, setQuantity]     = useState(1)
 
   const customizations = item.customizations ?? []
   const allSelected    = customizations.every((c) => !c.required || selections[c.label])
 
-  /**
-   * FIX: Derive the display price from the selected Size option.
-   *
-   * If the user has picked a Size option like "Large – Rs 1995", parse
-   * the Rs value out and show that. Otherwise fall back to item.price.
-   *
-   * This mirrors the resolveItemPrice() logic in cartStore.ts so the
-   * modal button always reflects the correct size price before adding.
-   */
-  const displayPrice = (() => {
+  // Live price derived from selected Size option, falls back to item.price
+  const unitPrice = (() => {
     const sizeValue = selections['Size']
     if (sizeValue) {
       const match = sizeValue.match(/Rs\s*([\d,]+)/)
@@ -246,6 +237,7 @@ function ItemModal({
       <div className="w-full max-w-lg bg-white rounded-t-3xl p-6 pb-10"
         onClick={(e) => e.stopPropagation()}>
 
+        {/* Item header */}
         <div className="flex items-start gap-3 mb-5">
           <span className="text-4xl">{item.emoji}</span>
           <div>
@@ -254,6 +246,7 @@ function ItemModal({
           </div>
         </div>
 
+        {/* Customization pill groups */}
         {customizations.map((c) => (
           <div key={c.label} className="mb-4">
             <p className="text-xs font-medium mb-2" style={{ color: 'rgba(28,15,8,0.5)' }}>
@@ -276,16 +269,48 @@ function ItemModal({
           </div>
         ))}
 
-        {/* FIX: Button now shows dynamically resolved price based on selected size */}
+        {/* ── Quantity stepper — always shown ──────────────────────────────── */}
+        <div className="flex items-center justify-between py-3 mb-4 border-t border-b"
+          style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
+          <p className="text-sm font-medium" style={{ color: 'var(--espresso)' }}>Quantity</p>
+          <div className="flex items-center gap-5">
+            <button
+              onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+              className="w-9 h-9 rounded-full border flex items-center justify-center text-lg font-medium transition-all"
+              style={{
+                borderColor: quantity === 1 ? 'rgba(28,15,8,0.1)' : 'rgba(28,15,8,0.2)',
+                color:       quantity === 1 ? 'rgba(28,15,8,0.2)' : 'var(--espresso)',
+              }}>
+              −
+            </button>
+            <span className="text-lg font-semibold w-5 text-center"
+              style={{ color: 'var(--espresso)' }}>
+              {quantity}
+            </span>
+            <button
+              onClick={() => setQuantity((q) => Math.min(9, q + 1))}
+              className="w-9 h-9 rounded-full border flex items-center justify-center text-lg font-medium transition-all"
+              style={{
+                borderColor: quantity === 9 ? 'rgba(28,15,8,0.1)' : 'rgba(28,15,8,0.2)',
+                color:       quantity === 9 ? 'rgba(28,15,8,0.2)' : 'var(--espresso)',
+              }}>
+              +
+            </button>
+          </div>
+        </div>
+
+        {/* Add to cart */}
         <button
           disabled={!allSelected}
-          onClick={() => onAdd(selections)}
-          className="w-full mt-4 py-3 rounded-xl text-white text-sm font-medium transition-all"
+          onClick={() => onAdd(selections, quantity)}
+          className="w-full py-3 rounded-xl text-white text-sm font-medium transition-all"
           style={{
             background: allSelected ? 'var(--espresso)' : 'rgba(28,15,8,0.15)',
             color: allSelected ? '#fff' : 'rgba(28,15,8,0.4)',
           }}>
-          Add to cart — {formatPrice(displayPrice)}
+          {allSelected
+            ? `Add ${quantity > 1 ? `${quantity} × ` : ''}to cart — ${formatPrice(unitPrice * quantity)}`
+            : 'Select required options above'}
         </button>
       </div>
     </div>
