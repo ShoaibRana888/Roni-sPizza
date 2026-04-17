@@ -11,6 +11,9 @@
  * PRICE FIX: Uses resolveItemPrice() from cartStore to extract the actual price
  *            from the selected size option (e.g. "Large – Rs 2395" → 2395)
  *            instead of always showing the base menu price.
+ *
+ * VARIANT FIX: removeItem and updateQuantity now pass selectedOptions so the
+ *              correct size variant is targeted (not just matched by item ID).
  */
 
 'use client'
@@ -105,17 +108,20 @@ function CartPageInner() {
               </div>
 
               <div className="flex flex-col items-end gap-2">
-                {/* Remove item */}
-                <button onClick={() => removeItem(cartItem.menuItem.id)}
+                {/* FIX: pass selectedOptions so the correct variant is removed */}
+                <button
+                  onClick={() => removeItem(cartItem.menuItem.id, cartItem.selectedOptions)}
                   className="text-xs" style={{ color: 'rgba(28,15,8,0.3)' }}>✕</button>
 
-                {/* Quantity stepper */}
+                {/* Quantity stepper — FIX: pass selectedOptions for correct variant */}
                 <div className="flex items-center gap-2 border rounded-lg px-2 py-1"
                   style={{ borderColor: 'rgba(28,15,8,0.12)' }}>
-                  <button onClick={() => updateQuantity(cartItem.menuItem.id, cartItem.quantity - 1)}
+                  <button
+                    onClick={() => updateQuantity(cartItem.menuItem.id, cartItem.quantity - 1, cartItem.selectedOptions)}
                     className="text-base w-5 text-center">−</button>
                   <span className="text-sm font-medium w-4 text-center">{cartItem.quantity}</span>
-                  <button onClick={() => updateQuantity(cartItem.menuItem.id, cartItem.quantity + 1)}
+                  <button
+                    onClick={() => updateQuantity(cartItem.menuItem.id, cartItem.quantity + 1, cartItem.selectedOptions)}
                     className="text-base w-5 text-center">+</button>
                 </div>
               </div>
@@ -143,19 +149,21 @@ function CartPageInner() {
           </span>
           <span className="font-medium">{formatPrice(total())}</span>
         </div>
-        <button onClick={placeOrder}
-          className="w-full py-4 rounded-2xl text-white font-medium text-sm"
+        <button
+          onClick={placeOrder}
+          className="w-full py-3 rounded-xl text-white text-sm font-medium"
           style={{ background: 'var(--espresso)' }}>
-          Place order · {formatPrice(total())}
+          Place order
         </button>
-        <p className="text-center text-xs" style={{ color: 'rgba(28,15,8,0.3)' }}>
-          Pay at the counter when your order is ready
-        </p>
       </div>
     </div>
   )
 }
 
 export default function CartPage() {
-  return <Suspense><CartPageInner /></Suspense>
+  return (
+    <Suspense>
+      <CartPageInner />
+    </Suspense>
+  )
 }

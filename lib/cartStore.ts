@@ -10,6 +10,11 @@
  *   Pizza sizes are encoded in the option label itself, e.g. "Large – Rs 2395".
  *   resolveItemPrice() extracts that number so the cart always charges the
  *   correct size price rather than the base menu price.
+ *
+ * FIX: removeItem and updateQuantity now accept an optional selectedOptions
+ *      parameter and match on BOTH menuItem.id AND selectedOptions. This
+ *      prevents the wrong size variant from being removed/updated when the
+ *      same pizza is in the cart in two different sizes.
  */
 
 import { create } from 'zustand'
@@ -42,6 +47,14 @@ export function resolveItemPrice(item: CartItem): number {
   return item.menuItem.price
 }
 
+/** Returns true if two selectedOptions maps are identical */
+function optionsMatch(
+  a: Record<string, string> | undefined,
+  b: Record<string, string> | undefined,
+): boolean {
+  return JSON.stringify(a ?? {}) === JSON.stringify(b ?? {})
+}
+
 interface CartStore {
   items: CartItem[]
   tableNumber: string
@@ -50,11 +63,11 @@ interface CartStore {
   // Add an item to cart (merges with existing if same item + same options)
   addItem: (item: MenuItem, options?: Record<string, string>, notes?: string) => void
 
-  // Remove an item entirely by its menu item ID
-  removeItem: (itemId: string) => void
+  // Remove an item by its menu item ID + selected options (both must match)
+  removeItem: (itemId: string, selectedOptions?: Record<string, string>) => void
 
   // Update quantity — removes item if quantity drops to 0
-  updateQuantity: (itemId: string, quantity: number) => void
+  updateQuantity: (itemId: string, quantity: number, selectedOptions?: Record<string, string>) => void
 
   // Clear everything (called after order is placed)
   clearCart: () => void
@@ -76,50 +89,68 @@ export const useCartStore = create<CartStore>((set, get) => ({
     const existing = get().items.find(
       (i) =>
         i.menuItem.id === menuItem.id &&
-        JSON.stringify(i.selectedOptions) === JSON.stringify(selectedOptions)
+        optionsMatch(i.selectedOptions, selectedOptions)
     )
     if (existing) {
       set((state) => ({
         items: state.items.map((i) =>
           i.menuItem.id === menuItem.id &&
-          JSON.stringify(i.selectedOptions) === JSON.stringify(selectedOptions)
+          optionsMatch(i.selectedOptions, selectedOptions)
             ? { ...i, quantity: i.quantity + 1 }
             : i
         ),
       }))
     } else {
       set((state) => ({
-        items: [...state.items, { menuItem, quantity: 1, selectedOptions, notes }],
+        items: [
+          ...state.items,
+          { menuItem, quantity: 1, selectedOptions, notes },
+        ],
       }))
     }
   },
 
-  removeItem: (itemId) => {
-    set((state) => ({ items: state.items.filter((i) => i.menuItem.id !== itemId) }))
-  },
-
-  updateQuantity: (itemId, quantity) => {
-    if (quantity <= 0) {
-      get().removeItem(itemId)
-      return
-    }
+  // FIX: match by both menuItem.id AND selectedOptions so removing "Large"
+  // doesn't accidentally remove the "Medium" variant of the same pizza.
+  removeItem: (itemId, selectedOptions) => {
     set((state) => ({
-      items: state.items.map((i) =>
-        i.menuItem.id === itemId ? { ...i, quantity } : i
+      items: state.items.filter(
+        (i) =>
+          !(
+            i.menuItem.id === itemId &&
+            optionsMatch(i.selectedOptions, selectedOptions)
+          )
       ),
     }))
   },
 
-  clearCart: () => set({ items: [] }),
+  // FIX: same matching logic as removeItem for consistency.
+  updateQuantity: (itemId, quantity, selectedOptions) => {
+    if (quantity <= 0) {
+      get().removeItem(itemId, selectedOptions)
+      return
+    }
+    set((state) => ({
+      items: state.items.map((i) =>
+        i.menuItem.id === itemId &&
+        optionsMatch(i.selectedOptions, selectedOptions)
+          ? { ...i, quantity }
+          : i
+      ),
+    }))
+  },
 
-  setTableNumber: (tableNumber) => set({ tableNumber }),
+  clearCart: () => set({ items: [], tableNumber: '', customerName: '' }),
 
-  setCustomerName: (customerName) => set({ customerName }),
+  setTableNumber: (table) => set({ tableNumber: table }),
+  setCustomerName: (name) => set({ customerName: name }),
 
-  // Uses resolveItemPrice so Large pizzas charge the Large price
   total: () =>
-    get().items.reduce((sum, i) => sum + resolveItemPrice(i) * i.quantity, 0),
+    get().items.reduce(
+      (sum, item) => sum + resolveItemPrice(item) * item.quantity,
+      0
+    ),
 
   itemCount: () =>
-    get().items.reduce((sum, i) => sum + i.quantity, 0),
+    get().items.reduce((sum, item) => sum + item.quantity, 0),
 }))

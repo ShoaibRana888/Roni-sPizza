@@ -9,6 +9,9 @@
  *          - A floating cart bar appears at the bottom once items are added
  * ROUTE: /order?table=1  (or any active table number)
  * ACCESSED BY: Customers via QR code scan — no login required
+ *
+ * PRICE FIX: ItemModal now derives the display price from the selected Size option
+ *            (e.g. "Large – Rs 1995" → Rs 1,995) instead of always showing item.price.
  */
 
 'use client'
@@ -20,7 +23,6 @@ import { MenuItem } from '@/lib/supabase'
 import { MOCK_MENU } from '@/lib/mockData'
 import { useCartStore } from '@/lib/cartStore'
 import { formatPrice } from '@/lib/utils'
-import { resolveItemPrice } from '@/lib/cartStore'
 
 const CAFE_NAME   = "Roni's Pizza"
 const STORAGE_KEY = 'ronis_table_count'
@@ -69,55 +71,47 @@ function OrderPageInner() {
         return
       }
 
-      // 2. Fetch live menu from Supabase
-      const { data: menuData, error } = await supabase
+      // 2. Fetch live menu
+      const { data, error } = await supabase
         .from('menu_items')
         .select('*')
         .eq('available', true)
         .order('category')
 
-      if (!error && menuData && menuData.length > 0) {
-        setMenu(menuData as MenuItem[])
+      if (!error && data && data.length > 0) {
+        setMenu(data)
       }
-      // If fetch fails, MOCK_MENU stays as the fallback
     }
 
     init()
-  }, [table, setTableNumber, validTables, tablesLoaded])
+  }, [tablesLoaded, table, setTableNumber, validTables])
 
-  // ── Guard: wait for localStorage to load ─────────────────────────────────────
-  if (!tablesLoaded) {
-    return (
-      <div className="min-h-screen flex items-center justify-center"
-        style={{ background: 'var(--cream)' }}>
-        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.35)' }}>Loading…</p>
-      </div>
-    )
-  }
-
-  // ── Guard: invalid table number ──────────────────────────────────────────────
-  if (!validTables.includes(table)) {
+  // ── Invalid table ─────────────────────────────────────────────────────────────
+  if (tablesLoaded && !validTables.includes(table)) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center"
         style={{ background: 'var(--cream)' }}>
         <span className="text-5xl mb-4">🍕</span>
-        <h1 className="font-serif text-2xl mb-2">Invalid table</h1>
-        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.5)' }}>
-          Please scan the QR code on your table.
+        <p className="font-serif text-2xl mb-2">{CAFE_NAME}</p>
+        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.45)' }}>
+          Table not found. Please scan the QR code at your table.
         </p>
       </div>
     )
   }
 
-  // ── Guard: table already has active order ────────────────────────────────────
+  // ── Table blocked ─────────────────────────────────────────────────────────────
   if (tableBlocked) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center"
         style={{ background: 'var(--cream)' }}>
         <span className="text-5xl mb-4">⏳</span>
-        <h1 className="font-serif text-2xl mb-2">Order in progress</h1>
-        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.5)' }}>
-          This table already has an active order. Please wait for it to complete.
+        <p className="font-serif text-2xl mb-2">Order in progress</p>
+        <p className="text-sm" style={{ color: 'rgba(28,15,8,0.45)' }}>
+          This table already has an active order.
+        </p>
+        <p className="text-sm mt-1" style={{ color: 'rgba(28,15,8,0.35)' }}>
+          Please wait for it to complete.
         </p>
       </div>
     )
@@ -224,6 +218,27 @@ function ItemModal({
   const customizations = item.customizations ?? []
   const allSelected    = customizations.every((c) => !c.required || selections[c.label])
 
+  /**
+   * FIX: Derive the display price from the selected Size option.
+   *
+   * If the user has picked a Size option like "Large – Rs 1995", parse
+   * the Rs value out and show that. Otherwise fall back to item.price.
+   *
+   * This mirrors the resolveItemPrice() logic in cartStore.ts so the
+   * modal button always reflects the correct size price before adding.
+   */
+  const displayPrice = (() => {
+    const sizeValue = selections['Size']
+    if (sizeValue) {
+      const match = sizeValue.match(/Rs\s*([\d,]+)/)
+      if (match) {
+        const parsed = parseInt(match[1].replace(/,/g, ''), 10)
+        if (!isNaN(parsed)) return parsed
+      }
+    }
+    return item.price
+  })()
+
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center"
       style={{ background: 'rgba(28,15,8,0.4)' }}
@@ -261,6 +276,7 @@ function ItemModal({
           </div>
         ))}
 
+        {/* FIX: Button now shows dynamically resolved price based on selected size */}
         <button
           disabled={!allSelected}
           onClick={() => onAdd(selections)}
@@ -269,7 +285,7 @@ function ItemModal({
             background: allSelected ? 'var(--espresso)' : 'rgba(28,15,8,0.15)',
             color: allSelected ? '#fff' : 'rgba(28,15,8,0.4)',
           }}>
-          Add to cart — {formatPrice(item.price)}
+          Add to cart — {formatPrice(displayPrice)}
         </button>
       </div>
     </div>
