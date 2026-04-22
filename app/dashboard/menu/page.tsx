@@ -7,7 +7,7 @@
 
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase, MenuItem } from '@/lib/supabase'
 import { formatPrice } from '@/lib/utils'
 
@@ -30,13 +30,16 @@ async function uploadImage(file: File): Promise<string | null> {
 }
 
 export default function MenuPage() {
-  const [items, setItems]         = useState<MenuItem[]>([])
-  const [loading, setLoading]     = useState(true)
-  const [showForm, setShowForm]   = useState(false)
-  const [form, setForm]           = useState(BLANK_FORM)
-  const [saving, setSaving]       = useState(false)
+  const [items, setItems]       = useState<MenuItem[]>([])
+  const [loading, setLoading]   = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm]         = useState(BLANK_FORM)
+  const [saving, setSaving]     = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [deleteId, setDeleteId]   = useState<string | null>(null)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [uploadingPhotoId, setUploadingPhotoId] = useState<string | null>(null)
+  const photoInputRef = useRef<HTMLInputElement>(null)
+  const photoTargetId = useRef<string | null>(null)
 
   useEffect(() => {
     supabase
@@ -75,12 +78,12 @@ export default function MenuPage() {
     const { data, error } = await supabase
       .from('menu_items')
       .insert({
-        name:           form.name.trim(),
-        description:    form.description.trim(),
-        price:          parseInt(form.price),
-        category:       form.category,
-        emoji:          form.emoji || '🍕',
-        available:      true,
+        name:        form.name.trim(),
+        description: form.description.trim(),
+        price:       parseInt(form.price),
+        category:    form.category,
+        emoji:       form.emoji || '🍕',
+        available:   true,
         customizations: [],
         image_url,
       })
@@ -93,6 +96,21 @@ export default function MenuPage() {
       setShowForm(false)
     }
     setSaving(false)
+  }
+
+  const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    const id   = photoTargetId.current
+    if (!file || !id) return
+    if (file.size > 2 * 1024 * 1024) { alert('Image must be under 2 MB'); return }
+    setUploadingPhotoId(id)
+    const image_url = await uploadImage(file)
+    if (image_url) {
+      setItems((prev) => prev.map((i) => i.id === id ? { ...i, image_url } : i))
+      await supabase.from('menu_items').update({ image_url }).eq('id', id)
+    }
+    setUploadingPhotoId(null)
+    e.target.value = ''
   }
 
   const deleteItem = async (id: string) => {
@@ -129,15 +147,36 @@ export default function MenuPage() {
                 <div key={item.id}
                   className="bg-white rounded-xl border p-4 flex gap-3 transition-all"
                   style={{ borderColor: 'rgba(28,15,8,0.08)', opacity: item.available ? 1 : 0.5 }}>
-                  {item.image_url ? (
-                    <img
-                      src={item.image_url}
-                      alt={item.name}
-                      className="w-12 h-12 rounded-xl object-cover shrink-0"
-                    />
-                  ) : (
-                    <span className="text-2xl">{item.emoji}</span>
-                  )}
+
+                  {/* Photo area — click to upload / change */}
+                  <button
+                    type="button"
+                    className="relative shrink-0 group"
+                    title={item.image_url ? 'Change photo' : 'Add photo'}
+                    onClick={() => { photoTargetId.current = item.id; photoInputRef.current?.click() }}>
+                    {item.image_url ? (
+                      <>
+                        <img src={item.image_url} alt={item.name}
+                          className="w-12 h-12 rounded-xl object-cover" />
+                        <div className="absolute inset-0 rounded-xl bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                          <span className="text-white text-xs">📷</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="w-12 h-12 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-0.5 transition-colors group-hover:border-[var(--espresso)]"
+                        style={{ borderColor: 'rgba(28,15,8,0.15)' }}>
+                        <span className="text-lg leading-none">{item.emoji}</span>
+                        <span className="text-[9px] leading-none" style={{ color: 'rgba(28,15,8,0.35)' }}>photo</span>
+                      </div>
+                    )}
+                    {uploadingPhotoId === item.id && (
+                      <div className="absolute inset-0 rounded-xl flex items-center justify-center"
+                        style={{ background: 'rgba(255,255,255,0.8)' }}>
+                        <span className="text-xs" style={{ color: 'rgba(28,15,8,0.5)' }}>…</span>
+                      </div>
+                    )}
+                  </button>
+
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-sm">{item.name}</p>
                     <p className="text-xs mt-0.5 line-clamp-2" style={{ color: 'rgba(28,15,8,0.45)' }}>
@@ -180,6 +219,10 @@ export default function MenuPage() {
         ))}
       </div>
 
+      {/* Hidden input shared by all item photo buttons */}
+      <input ref={photoInputRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoChange} />
+
+      {/* Add item modal */}
       {showForm && (
         <div className="fixed inset-0 z-40 flex items-center justify-center"
           style={{ background: 'rgba(28,15,8,0.4)' }}

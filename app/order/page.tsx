@@ -3,11 +3,14 @@
  * PURPOSE: Customer-facing menu browsing page.
  *          - Validates table number from localStorage
  *          - Blocks ordering if table already has an active order
- *            (bypassed when ?addOn=1 is present — customer is adding to existing order)
  *          - Fetches live menu from Supabase (falls back to MOCK_MENU)
- *          - Category filter strip + item grid with image-or-emoji display
+ *          - Category filter strip + item grid
  *          - Item modal with quantity stepper + customization options
  *          - Floating cart bar
+ *
+ * CATEGORY ORDER: Pizzas first, Drinks and Extras last.
+ *   Classic Pizzas → Roni's Specials → Protein Specials → Drinks → Extras
+ *   Any unknown future categories are appended alphabetically after Extras.
  */
 
 'use client'
@@ -48,12 +51,12 @@ function OrderPageInner() {
   const table        = searchParams.get('table') || ''
   const addOn        = searchParams.get('addOn') === '1'
 
-  const [menu, setMenu]                   = useState<MenuItem[]>(MOCK_MENU)
-  const [activeCategory, setCategory]     = useState('All')
-  const [selectedItem, setSelected]       = useState<MenuItem | null>(null)
-  const [tableBlocked, setBlocked]        = useState(false)
-  const [validTables, setValidTables]     = useState<string[]>([])
-  const [tablesLoaded, setTablesLoaded]   = useState(false)
+  const [menu, setMenu]               = useState<MenuItem[]>(MOCK_MENU)
+  const [activeCategory, setCategory] = useState('All')
+  const [selectedItem, setSelected]   = useState<MenuItem | null>(null)
+  const [tableBlocked, setBlocked]    = useState(false)
+  const [validTables, setValidTables] = useState<string[]>([])
+  const [tablesLoaded, setTablesLoaded] = useState(false)
 
   const { addItem, itemCount, setTableNumber } = useCartStore()
 
@@ -147,7 +150,9 @@ function OrderPageInner() {
     return a.name.localeCompare(b.name)
   })
 
-  const visible   = activeCategory === 'All' ? sortedMenu : sortedMenu.filter((i) => i.category === activeCategory)
+  const visible   = activeCategory === 'All'
+    ? sortedMenu
+    : sortedMenu.filter((i) => i.category === activeCategory)
   const cartCount = itemCount()
 
   return (
@@ -240,7 +245,9 @@ function OrderPageInner() {
 }
 
 function ItemModal({
-  item, onClose, onAdd,
+  item,
+  onClose,
+  onAdd,
 }: {
   item: MenuItem
   onClose: () => void
@@ -322,7 +329,8 @@ function ItemModal({
               }}>
               −
             </button>
-            <span className="text-lg font-semibold w-5 text-center" style={{ color: 'var(--espresso)' }}>
+            <span className="text-lg font-semibold w-5 text-center"
+              style={{ color: 'var(--espresso)' }}>
               {quantity}
             </span>
             <button

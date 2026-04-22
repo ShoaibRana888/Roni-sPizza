@@ -1,10 +1,6 @@
 /**
  * FILE: app/order/confirm/page.tsx
  * PURPOSE: Live order-tracking screen shown to customers after placing an order.
- *          - Polls Supabase every 5 s for real-time status updates
- *          - Shows a 25-minute countdown progress bar
- *          - Displays the full order item list with prices
- *          - "Add more items" button when order is still new/preparing
  * ROUTE: /order/confirm?table=1&orderId=<uuid>
  */
 
@@ -67,7 +63,7 @@ const STATUS_CONFIG: Record<
 const STEPS: { icon: string; text: string; activeOn: OrderStatus[] }[] = [
   { icon: '✓',  text: 'Order placed',       activeOn: ['new', 'preparing', 'done'] },
   { icon: '🍕', text: 'Being prepared',     activeOn: ['preparing', 'done'] },
-  { icon: '🔔', text: "On the way to you",  activeOn: ['done'] },
+  { icon: '🔔', text: 'On the way to you',  activeOn: ['done'] },
   { icon: '💳', text: 'Pay at the counter', activeOn: [] },
 ]
 
@@ -87,12 +83,17 @@ function ConfirmPageInner() {
 
   useEffect(() => {
     if (!orderId) return
+
     const fetchOrder = async () => {
       const { data, error } = await supabase
-        .from('orders').select('*').eq('id', orderId).single()
+        .from('orders')
+        .select('*')
+        .eq('id', orderId)
+        .single()
       if (!error && data) setOrder(data as Order)
       setLoading(false)
     }
+
     fetchOrder()
     const poll = setInterval(fetchOrder, POLL_INTERVAL_MS)
     return () => clearInterval(poll)
@@ -141,22 +142,24 @@ function ConfirmPageInner() {
     <div className="min-h-screen flex flex-col items-center p-6 pt-12"
       style={{ background: 'var(--cream)' }}>
 
-      {/* Status card */}
       <div className="w-full max-w-sm bg-white rounded-3xl border overflow-hidden shadow-sm mb-6"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
 
         {!isDone && status !== 'cancelled' && (
           <div className="h-1.5 w-full" style={{ background: 'rgba(28,15,8,0.06)' }}>
-            <div className="h-full transition-all duration-1000"
+            <div
+              className="h-full transition-all duration-1000"
               style={{
                 width: `${pct}%`,
                 background: overdue ? '#C0392B' : pct > 40 ? 'var(--sage)' : 'var(--latte)',
-              }} />
+              }}
+            />
           </div>
         )}
 
         <div className="flex flex-col items-center pt-8 pb-6 px-6 text-center">
-          <div className="w-20 h-20 rounded-full flex items-center justify-center text-4xl mb-4"
+          <div
+            className="w-20 h-20 rounded-full flex items-center justify-center text-4xl mb-4"
             style={{ background: cfg.bg }}>
             {cfg.icon}
           </div>
@@ -190,17 +193,18 @@ function ConfirmPageInner() {
         </div>
       </div>
 
-      {/* Progress steps */}
       <div className="w-full max-w-sm bg-white rounded-2xl border p-5 mb-6"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <p className="text-xs font-medium uppercase tracking-wider mb-4"
           style={{ color: 'rgba(28,15,8,0.35)' }}>Order progress</p>
+
         <div className="space-y-3">
           {STEPS.map((step, i) => {
             const active = step.activeOn.includes(status)
             return (
               <div key={i} className="flex items-center gap-3">
-                <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs flex-shrink-0 transition-all"
+                <div
+                  className="w-7 h-7 rounded-full flex items-center justify-center text-xs flex-shrink-0 transition-all"
                   style={{
                     background: active ? 'var(--espresso)' : 'rgba(28,15,8,0.07)',
                     color:      active ? '#fff'            : 'rgba(28,15,8,0.25)',
@@ -209,7 +213,7 @@ function ConfirmPageInner() {
                 </div>
                 <span className="text-sm transition-all"
                   style={{
-                    color:      active ? 'var(--espresso)' : 'rgba(28,15,8,0.3)',
+                    color: active ? 'var(--espresso)' : 'rgba(28,15,8,0.3)',
                     fontWeight: active ? 500 : 400,
                   }}>
                   {step.text}
@@ -224,11 +228,11 @@ function ConfirmPageInner() {
         </div>
       </div>
 
-      {/* Order summary */}
       <div className="w-full max-w-sm bg-white rounded-2xl border p-5 mb-4"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <p className="text-xs font-medium uppercase tracking-wider mb-4"
           style={{ color: 'rgba(28,15,8,0.35)' }}>Your order</p>
+
         <div className="space-y-2">
           {order.items.map((item, i) => {
             const unitPrice = resolveItemPrice(item)
@@ -253,6 +257,7 @@ function ConfirmPageInner() {
             )
           })}
         </div>
+
         <div className="border-t mt-4 pt-3 flex justify-between text-sm font-medium"
           style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
           <span>Total</span>
@@ -260,17 +265,19 @@ function ConfirmPageInner() {
         </div>
       </div>
 
-      {/* Add more items */}
       {(status === 'new' || status === 'preparing') && (
         <button
           onClick={() => router.push(`/order?table=${table}&addOn=1`)}
           className="w-full max-w-sm py-3 rounded-2xl border text-sm font-medium mb-4"
-          style={{ borderColor: 'rgba(28,15,8,0.15)', color: 'var(--espresso)', background: '#fff' }}>
+          style={{
+            borderColor: 'rgba(28,15,8,0.15)',
+            color: 'var(--espresso)',
+            background: '#fff',
+          }}>
           + Add more items
         </button>
       )}
 
-      {/* Footer */}
       <p className="text-xs text-center" style={{ color: 'rgba(28,15,8,0.3)' }}>
         {isDone
           ? "Please pay at the counter once you're done. Enjoy your meal! 🍕"

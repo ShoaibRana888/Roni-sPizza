@@ -1,11 +1,6 @@
 /**
  * FILE: app/order/cart/page.tsx
  * PURPOSE: Customer cart review page.
- *          - Shows all items with correct size-based pricing
- *          - Quantity adjustments and item removal
- *          - Optional customer name field
- *          - "Place order" / "Add to order" submits to Supabase
- *          - ?addOn=1 param changes labels and preserves navigation context
  */
 
 'use client'
@@ -17,10 +12,10 @@ import { formatPrice } from '@/lib/utils'
 import { supabase } from '../../../lib/supabase'
 
 function CartPageInner() {
-  const router       = useRouter()
+  const router = useRouter()
   const searchParams = useSearchParams()
-  const table        = searchParams.get('table') || '1'
-  const addOn        = searchParams.get('addOn') === '1'
+  const table = searchParams.get('table') || '1'
+  const addOn = searchParams.get('addOn') === '1'
 
   const { items, updateQuantity, removeItem, total, itemCount, customerName, setCustomerName } = useCartStore()
 
@@ -31,11 +26,11 @@ function CartPageInner() {
     setSubmitting(true)
 
     const { data, error } = await supabase.from('orders').insert({
-      table_number:  table,
+      table_number: table,
       customer_name: customerName || null,
       items,
-      total:         total(),
-      status:        'new',
+      total: total(),
+      status: 'new',
     }).select().single()
 
     if (error) {

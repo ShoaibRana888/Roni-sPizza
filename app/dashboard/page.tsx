@@ -8,7 +8,6 @@
  *            so the order stays 'done' in history (not 'cancelled')
  *          - Cleared IDs persist in localStorage with a 24-hour TTL so
  *            cleared orders don't reappear after a page refresh
- *          - Add-on orders (second order for same table) show a blue badge
  * ROUTE: /dashboard
  */
 
@@ -83,7 +82,9 @@ export default function DashboardPage() {
     return () => window.removeEventListener('storage', onStorage)
   }, [])
 
-  useEffect(() => { clearedIds.current = loadClearedIds() }, [])
+  useEffect(() => {
+    clearedIds.current = loadClearedIds()
+  }, [])
 
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 1000)
@@ -92,7 +93,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const expired = orders.filter(
-      (o) => o.status === 'done' &&
+      (o) =>
+        o.status === 'done' &&
         Date.now() - new Date(o.created_at).getTime() > TABLE_RESET_MS,
     )
     if (expired.length > 0) {
@@ -109,7 +111,9 @@ export default function DashboardPage() {
       .order('created_at', { ascending: false })
       .then(({ data, error }) => {
         if (!error && data) {
-          const visible = (data as Order[]).filter((o) => !clearedIds.current.has(o.id))
+          const visible = (data as Order[]).filter(
+            (o) => !clearedIds.current.has(o.id),
+          )
           setOrders(visible)
         }
         setLoading(false)
@@ -117,29 +121,40 @@ export default function DashboardPage() {
 
     const channel = supabase
       .channel('dashboard-orders')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
-        const id = (payload.new as Order)?.id || (payload.old as Order)?.id
-        if (id && pendingUpdates.current.has(id)) { pendingUpdates.current.delete(id); return }
-        if (id && clearedIds.current.has(id)) return
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders' },
+        (payload) => {
+          const id = (payload.new as Order)?.id || (payload.old as Order)?.id
 
-        if (payload.eventType === 'INSERT') {
-          const incoming = payload.new as Order
-          if (incoming.status !== 'cancelled') {
-            setOrders((prev) => [incoming, ...prev.filter((o) => o.id !== incoming.id)])
+          if (id && pendingUpdates.current.has(id)) {
+            pendingUpdates.current.delete(id)
+            return
           }
-        }
-        if (payload.eventType === 'UPDATE') {
-          const updated = payload.new as Order
-          if (updated.status === 'cancelled') {
-            setOrders((prev) => prev.filter((o) => o.id !== updated.id))
-          } else {
-            setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)))
+
+          if (id && clearedIds.current.has(id)) return
+
+          if (payload.eventType === 'INSERT') {
+            const incoming = payload.new as Order
+            if (incoming.status !== 'cancelled') {
+              setOrders((prev) => [incoming, ...prev.filter((o) => o.id !== incoming.id)])
+            }
           }
-        }
-        if (payload.eventType === 'DELETE') {
-          setOrders((prev) => prev.filter((o) => o.id !== (payload.old as Order).id))
-        }
-      })
+          if (payload.eventType === 'UPDATE') {
+            const updated = payload.new as Order
+            if (updated.status === 'cancelled') {
+              setOrders((prev) => prev.filter((o) => o.id !== updated.id))
+            } else {
+              setOrders((prev) =>
+                prev.map((o) => (o.id === updated.id ? updated : o)),
+              )
+            }
+          }
+          if (payload.eventType === 'DELETE') {
+            setOrders((prev) => prev.filter((o) => o.id !== (payload.old as Order).id))
+          }
+        },
+      )
       .subscribe()
 
     return () => { supabase.removeChannel(channel) }
@@ -149,10 +164,15 @@ export default function DashboardPage() {
     const order = orders.find((o) => o.id === id)
     if (!order) return
     const next: OrderStatus = order.status === 'new' ? 'preparing' : 'done'
+
     pendingUpdates.current.add(id)
-    setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o)))
+    setOrders((prev) =>
+      prev.map((o) => (o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o)),
+    )
+
     const { error } = await supabase.from('orders').update({ status: next }).eq('id', id)
     if (error) {
+      console.error('Failed to advance order:', error)
       pendingUpdates.current.delete(id)
       setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status: order.status } : o)))
     }
@@ -164,13 +184,15 @@ export default function DashboardPage() {
     setOrders((prev) => prev.filter((o) => o.id !== id))
   }
 
-  const filtered  = filter === 'all' ? orders : orders.filter((o) => o.status === filter)
-  const newCount  = orders.filter((o) => o.status === 'new').length
-  const prepCount = orders.filter((o) => o.status === 'preparing').length
-  const doneCount = orders.filter((o) => o.status === 'done').length
-  const revenue   = orders.reduce((s, o) => s + o.total, 0)
+  const filtered     = filter === 'all' ? orders : orders.filter((o) => o.status === filter)
+  const newCount     = orders.filter((o) => o.status === 'new').length
+  const prepCount    = orders.filter((o) => o.status === 'preparing').length
+  const doneCount    = orders.filter((o) => o.status === 'done').length
+  const revenue      = orders.reduce((s, o) => s + o.total, 0)
   const activeTables = new Set(
-    orders.filter((o) => o.status === 'new' || o.status === 'preparing').map((o) => o.table_number),
+    orders
+      .filter((o) => o.status === 'new' || o.status === 'preparing')
+      .map((o) => o.table_number),
   )
 
   const tableOrderCounts = orders
@@ -206,6 +228,7 @@ export default function DashboardPage() {
       </header>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
+
         <div className="grid grid-cols-4 gap-4">
           {[
             { label: 'Orders today', value: orders.length },
@@ -242,7 +265,8 @@ export default function DashboardPage() {
 
         <div className="flex gap-2">
           {FILTER_TABS.map((tab) => (
-            <button key={tab.value} onClick={() => setFilter(tab.value)}
+            <button key={tab.value}
+              onClick={() => setFilter(tab.value)}
               className="text-xs px-4 py-1.5 rounded-full border transition-all"
               style={{
                 background:  filter === tab.value ? 'var(--espresso)' : '#fff',
@@ -264,7 +288,8 @@ export default function DashboardPage() {
             <p className="text-sm">No orders yet — waiting for customers</p>
           </div>
         ) : (
-          <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+          <div className="grid gap-4"
+            style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
             {filtered.map((order) => (
               <OrderCard
                 key={order.id}

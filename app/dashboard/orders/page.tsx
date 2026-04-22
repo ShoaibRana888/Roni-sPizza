@@ -1,8 +1,8 @@
 /**
  * FILE: app/dashboard/orders/page.tsx
  * PURPOSE: Live order management for staff.
- *          Only shows active (new/preparing) orders. Done orders are in History.
- *          Staff can advance status or cancel active orders.
+ *          Fetch all non-cancelled orders. Staff can advance status or cancel.
+ *          Filter by status. Search by table or order ref.
  * ROUTE: /dashboard/orders
  */
 
