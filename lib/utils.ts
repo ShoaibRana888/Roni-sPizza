@@ -32,7 +32,7 @@ export function orderTotal(order: Order): number {
 export const STATUS_LABELS: Record<string, string> = {
   new:       'New',
   preparing: 'Preparing',
-  done:      'Ready',
+  done:      'Completed', 
   cancelled: 'Cancelled',
 }
 
