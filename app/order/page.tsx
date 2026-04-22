@@ -3,14 +3,11 @@
  * PURPOSE: Customer-facing menu browsing page.
  *          - Validates table number from localStorage
  *          - Blocks ordering if table already has an active order
+ *            (bypassed when ?addOn=1 is present — customer is adding to existing order)
  *          - Fetches live menu from Supabase (falls back to MOCK_MENU)
- *          - Category filter strip + item grid
+ *          - Category filter strip + item grid with image-or-emoji display
  *          - Item modal with quantity stepper + customization options
  *          - Floating cart bar
- *
- * CATEGORY ORDER: Pizzas first, Drinks and Extras last.
- *   Classic Pizzas → Roni's Specials → Protein Specials → Drinks → Extras
- *   Any unknown future categories are appended alphabetically after Extras.
  */
 
 'use client'
@@ -26,10 +23,6 @@ import { formatPrice } from '@/lib/utils'
 const CAFE_NAME   = "Roni's Pizza"
 const STORAGE_KEY = 'ronis_table_count'
 
-/**
- * Desired display order for category tabs and menu grid.
- * Categories not in this list are appended at the end, sorted alphabetically.
- */
 const CATEGORY_ORDER = [
   'Classic Pizzas',
   "Roni's Specials",
@@ -38,18 +31,13 @@ const CATEGORY_ORDER = [
   'Extras',
 ]
 
-/** Sort a list of category names according to CATEGORY_ORDER. */
 function sortCategories(cats: string[]): string[] {
   return [...cats].sort((a, b) => {
     const ia = CATEGORY_ORDER.indexOf(a)
     const ib = CATEGORY_ORDER.indexOf(b)
-    // Both known → use defined order
     if (ia !== -1 && ib !== -1) return ia - ib
-    // Only a known → a first
     if (ia !== -1) return -1
-    // Only b known → b first
     if (ib !== -1) return 1
-    // Both unknown → alphabetical
     return a.localeCompare(b)
   })
 }
@@ -58,17 +46,17 @@ function OrderPageInner() {
   const searchParams = useSearchParams()
   const router       = useRouter()
   const table        = searchParams.get('table') || ''
+  const addOn        = searchParams.get('addOn') === '1'
 
-  const [menu, setMenu]               = useState<MenuItem[]>(MOCK_MENU)
-  const [activeCategory, setCategory] = useState('All')
-  const [selectedItem, setSelected]   = useState<MenuItem | null>(null)
-  const [tableBlocked, setBlocked]    = useState(false)
-  const [validTables, setValidTables] = useState<string[]>([])
-  const [tablesLoaded, setTablesLoaded] = useState(false)
+  const [menu, setMenu]                   = useState<MenuItem[]>(MOCK_MENU)
+  const [activeCategory, setCategory]     = useState('All')
+  const [selectedItem, setSelected]       = useState<MenuItem | null>(null)
+  const [tableBlocked, setBlocked]        = useState(false)
+  const [validTables, setValidTables]     = useState<string[]>([])
+  const [tablesLoaded, setTablesLoaded]   = useState(false)
 
   const { addItem, itemCount, setTableNumber } = useCartStore()
 
-  // ── On mount: compute valid tables from localStorage ─────────────────────────
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY)
     const count = saved ? parseInt(saved) : 4
@@ -77,22 +65,23 @@ function OrderPageInner() {
     setTablesLoaded(true)
   }, [])
 
-  // ── Once valid tables are known, validate + init ──────────────────────────────
   useEffect(() => {
     if (!tablesLoaded) return
     if (!validTables.includes(table)) return
     setTableNumber(table)
 
     async function init() {
-      const { data: activeOrder } = await supabase
-        .from('orders')
-        .select('id')
-        .eq('table_number', table)
-        .in('status', ['new', 'preparing'])
-        .limit(1)
-        .maybeSingle()
+      if (!addOn) {
+        const { data: activeOrder } = await supabase
+          .from('orders')
+          .select('id')
+          .eq('table_number', table)
+          .in('status', ['new', 'preparing'])
+          .limit(1)
+          .maybeSingle()
 
-      if (activeOrder) { setBlocked(true); return }
+        if (activeOrder) { setBlocked(true); return }
+      }
 
       const { data: menuData, error } = await supabase
         .from('menu_items')
@@ -105,9 +94,8 @@ function OrderPageInner() {
     }
 
     init()
-  }, [table, setTableNumber, validTables, tablesLoaded])
+  }, [table, setTableNumber, validTables, tablesLoaded, addOn])
 
-  // ── Guards ────────────────────────────────────────────────────────────────────
   if (!tablesLoaded) {
     return (
       <div className="min-h-screen flex items-center justify-center"
@@ -143,13 +131,10 @@ function OrderPageInner() {
     )
   }
 
-  // ── Sorted categories and visible items ───────────────────────────────────────
-  const rawCategories = [...new Set(menu.map((i) => i.category))]
+  const rawCategories    = [...new Set(menu.map((i) => i.category))]
   const sortedCategories = sortCategories(rawCategories)
-  const categories = ['All', ...sortedCategories]
+  const categories       = ['All', ...sortedCategories]
 
-  // Sort the menu items themselves to match category order so the grid
-  // reads top-to-bottom in the correct sequence when "All" is selected.
   const sortedMenu = [...menu].sort((a, b) => {
     const ia = CATEGORY_ORDER.indexOf(a.category)
     const ib = CATEGORY_ORDER.indexOf(b.category)
@@ -162,23 +147,24 @@ function OrderPageInner() {
     return a.name.localeCompare(b.name)
   })
 
-  const visible   = activeCategory === 'All'
-    ? sortedMenu
-    : sortedMenu.filter((i) => i.category === activeCategory)
+  const visible   = activeCategory === 'All' ? sortedMenu : sortedMenu.filter((i) => i.category === activeCategory)
   const cartCount = itemCount()
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--cream)' }}>
 
-      {/* Header */}
       <div className="sticky top-0 z-10 bg-white border-b"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <div className="px-5 pt-5 pb-3">
           <p className="font-serif text-2xl" style={{ color: 'var(--espresso)' }}>{CAFE_NAME}</p>
           <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {table}</p>
+          {addOn && (
+            <p className="text-xs mt-1 font-medium" style={{ color: '#1D4ED8' }}>
+              Adding items to your current order
+            </p>
+          )}
         </div>
 
-        {/* Category filter strip — sorted by CATEGORY_ORDER */}
         <div className="flex gap-2 px-5 pb-3 overflow-x-auto scrollbar-hide">
           {categories.map((cat) => (
             <button key={cat}
@@ -195,7 +181,6 @@ function OrderPageInner() {
         </div>
       </div>
 
-      {/* Menu grid — items already sorted by category order */}
       <div className="flex-1 p-4 pb-32 grid gap-3"
         style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
         {visible.map((item) => (
@@ -203,7 +188,15 @@ function OrderPageInner() {
             onClick={() => setSelected(item)}
             className="bg-white rounded-2xl border p-4 text-left flex gap-3 items-start transition-all active:scale-[0.98]"
             style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
-            <span className="text-3xl">{item.emoji}</span>
+            {item.image_url ? (
+              <img
+                src={item.image_url}
+                alt={item.name}
+                className="w-14 h-14 rounded-xl object-cover shrink-0"
+              />
+            ) : (
+              <span className="text-3xl">{item.emoji}</span>
+            )}
             <div className="flex-1 min-w-0">
               <p className="font-medium text-sm">{item.name}</p>
               <p className="text-xs mt-0.5 line-clamp-2" style={{ color: 'rgba(28,15,8,0.45)' }}>
@@ -217,11 +210,10 @@ function OrderPageInner() {
         ))}
       </div>
 
-      {/* Floating cart bar */}
       {cartCount > 0 && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-20">
           <button
-            onClick={() => router.push(`/order/cart?table=${table}`)}
+            onClick={() => router.push(`/order/cart?table=${table}${addOn ? '&addOn=1' : ''}`)}
             className="flex items-center gap-3 px-6 py-3 rounded-2xl text-white shadow-lg"
             style={{ background: 'var(--espresso)' }}>
             <span className="text-xs font-medium px-2 py-0.5 rounded-full"
@@ -233,7 +225,6 @@ function OrderPageInner() {
         </div>
       )}
 
-      {/* Item modal */}
       {selectedItem && (
         <ItemModal
           item={selectedItem}
@@ -248,11 +239,8 @@ function OrderPageInner() {
   )
 }
 
-// ── Item modal ────────────────────────────────────────────────────────────────
 function ItemModal({
-  item,
-  onClose,
-  onAdd,
+  item, onClose, onAdd,
 }: {
   item: MenuItem
   onClose: () => void
@@ -264,7 +252,6 @@ function ItemModal({
   const customizations = item.customizations ?? []
   const allSelected    = customizations.every((c) => !c.required || selections[c.label])
 
-  // Live price derived from selected Size option, falls back to item.price
   const unitPrice = (() => {
     const sizeValue = selections['Size']
     if (sizeValue) {
@@ -284,16 +271,22 @@ function ItemModal({
       <div className="w-full max-w-lg bg-white rounded-t-3xl p-6 pb-10"
         onClick={(e) => e.stopPropagation()}>
 
-        {/* Item header */}
         <div className="flex items-start gap-3 mb-5">
-          <span className="text-4xl">{item.emoji}</span>
+          {item.image_url ? (
+            <img
+              src={item.image_url}
+              alt={item.name}
+              className="w-16 h-16 rounded-2xl object-cover shrink-0"
+            />
+          ) : (
+            <span className="text-4xl">{item.emoji}</span>
+          )}
           <div>
             <p className="font-serif text-xl">{item.name}</p>
             <p className="text-sm mt-0.5" style={{ color: 'rgba(28,15,8,0.5)' }}>{item.description}</p>
           </div>
         </div>
 
-        {/* Customization pill groups */}
         {customizations.map((c) => (
           <div key={c.label} className="mb-4">
             <p className="text-xs font-medium mb-2" style={{ color: 'rgba(28,15,8,0.5)' }}>
@@ -316,7 +309,6 @@ function ItemModal({
           </div>
         ))}
 
-        {/* Quantity stepper */}
         <div className="flex items-center justify-between py-3 mb-4 border-t border-b"
           style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
           <p className="text-sm font-medium" style={{ color: 'var(--espresso)' }}>Quantity</p>
@@ -330,8 +322,7 @@ function ItemModal({
               }}>
               −
             </button>
-            <span className="text-lg font-semibold w-5 text-center"
-              style={{ color: 'var(--espresso)' }}>
+            <span className="text-lg font-semibold w-5 text-center" style={{ color: 'var(--espresso)' }}>
               {quantity}
             </span>
             <button
@@ -346,7 +337,6 @@ function ItemModal({
           </div>
         </div>
 
-        {/* Add to cart */}
         <button
           disabled={!allSelected}
           onClick={() => onAdd(selections, quantity)}

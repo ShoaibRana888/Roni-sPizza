@@ -1,8 +1,8 @@
 /**
  * FILE: app/dashboard/orders/page.tsx
  * PURPOSE: Live order management for staff.
- *          Fetch all non-cancelled orders. Staff can advance status or cancel.
- *          Filter by status. Search by table or order ref.
+ *          Only shows active (new/preparing) orders. Done orders are in History.
+ *          Staff can advance status or cancel active orders.
  * ROUTE: /dashboard/orders
  */
 
@@ -22,7 +22,7 @@ export default function OrdersPage() {
     supabase
       .from('orders')
       .select('*')
-      .not('status', 'eq', 'cancelled')
+      .in('status', ['new', 'preparing'])
       .order('created_at', { ascending: false })
       .then(({ data, error }) => {
         if (!error && data) setOrders(data as Order[])
@@ -47,7 +47,6 @@ export default function OrdersPage() {
     { label: 'All',       value: 'all' },
     { label: 'New',       value: 'new' },
     { label: 'Preparing', value: 'preparing' },
-    { label: 'Ready',     value: 'done' },
   ]
 
   const visible = orders
@@ -144,11 +143,13 @@ export default function OrdersPage() {
                           {order.status === 'new' ? 'Start prep' : 'Mark ready'}
                         </button>
                       )}
-                      <button onClick={() => cancel(order.id)}
-                        className="text-xs px-3 py-1 rounded-lg border"
-                        style={{ borderColor: 'rgba(192,57,43,0.3)', color: 'rgba(192,57,43,0.7)' }}>
-                        Cancel
-                      </button>
+                      {order.status !== 'done' && (
+                        <button onClick={() => cancel(order.id)}
+                          className="text-xs px-3 py-1 rounded-lg border"
+                          style={{ borderColor: 'rgba(192,57,43,0.3)', color: 'rgba(192,57,43,0.7)' }}>
+                          Cancel
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

@@ -8,13 +8,8 @@
  *            so the order stays 'done' in history (not 'cancelled')
  *          - Cleared IDs persist in localStorage with a 24-hour TTL so
  *            cleared orders don't reappear after a page refresh
+ *          - Add-on orders (second order for same table) show a blue badge
  * ROUTE: /dashboard
- *
- * FIX: clearedIds was stored in a useRef (in-memory only), so dismissed
- *      'done' orders reappeared every time the page was refreshed because
- *      the initial Supabase fetch brought them back.
- *      Now cleared IDs are saved to localStorage under 'ronis_cleared_orders'
- *      as { id: timestamp } pairs. On load, IDs older than 24 h are pruned.
  */
 
 'use client'
@@ -26,12 +21,9 @@ import { formatPrice, STATUS_COLORS, STATUS_LABELS } from '@/lib/utils'
 const ORDER_DURATION_MS  = 25 * 60 * 1000
 const TABLE_RESET_MS     = 60 * 60 * 1000
 const STORAGE_KEY        = 'ronis_table_count'
-const CLEARED_KEY        = 'ronis_cleared_orders'   // localStorage key for dismissed IDs
-const CLEARED_TTL_MS     = 24 * 60 * 60 * 1000      // prune entries older than 24 h
+const CLEARED_KEY        = 'ronis_cleared_orders'
+const CLEARED_TTL_MS     = 24 * 60 * 60 * 1000
 
-// ── Cleared-IDs helpers ───────────────────────────────────────────────────────
-
-/** Load cleared order IDs from localStorage, pruning any older than 24 h. */
 function loadClearedIds(): Set<string> {
   try {
     const raw = localStorage.getItem(CLEARED_KEY)
@@ -42,7 +34,6 @@ function loadClearedIds(): Set<string> {
     for (const [id, ts] of Object.entries(map)) {
       if (now - ts < CLEARED_TTL_MS) fresh[id] = ts
     }
-    // Persist pruned version back
     localStorage.setItem(CLEARED_KEY, JSON.stringify(fresh))
     return new Set(Object.keys(fresh))
   } catch {
@@ -50,19 +41,14 @@ function loadClearedIds(): Set<string> {
   }
 }
 
-/** Persist a newly cleared ID to localStorage. */
 function persistClearedId(id: string) {
   try {
     const raw = localStorage.getItem(CLEARED_KEY)
     const map: Record<string, number> = raw ? JSON.parse(raw) : {}
     map[id] = Date.now()
     localStorage.setItem(CLEARED_KEY, JSON.stringify(map))
-  } catch {
-    // localStorage unavailable — silently ignore
-  }
+  } catch {}
 }
-
-// ── Timer helpers ─────────────────────────────────────────────────────────────
 
 function secondsLeft(createdAt: string): number {
   const elapsed = Date.now() - new Date(createdAt).getTime()
@@ -75,8 +61,6 @@ function fmtCountdown(secs: number): string {
   return `${m}:${s}`
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-
 export default function DashboardPage() {
   const [orders, setOrders]   = useState<Order[]>([])
   const [tick, setTick]       = useState(0)
@@ -84,13 +68,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [tables, setTables]   = useState<number[]>([])
 
-  // Track IDs we just updated so Realtime doesn't revert our optimistic changes
   const pendingUpdates = useRef<Set<string>>(new Set())
+  const clearedIds     = useRef<Set<string>>(new Set())
 
-  // Cleared IDs — loaded from localStorage on mount, persisted on each clear
-  const clearedIds = useRef<Set<string>>(new Set())
-
-  // Load tables from localStorage
   useEffect(() => {
     const load = () => {
       const saved = localStorage.getItem(STORAGE_KEY)
@@ -103,22 +83,16 @@ export default function DashboardPage() {
     return () => window.removeEventListener('storage', onStorage)
   }, [])
 
-  // Load persisted cleared IDs on mount (before fetching orders)
-  useEffect(() => {
-    clearedIds.current = loadClearedIds()
-  }, [])
+  useEffect(() => { clearedIds.current = loadClearedIds() }, [])
 
-  // Tick every second for countdown timers
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 1000)
     return () => clearInterval(t)
   }, [])
 
-  // Auto-hide done orders older than 1 hour
   useEffect(() => {
     const expired = orders.filter(
-      (o) =>
-        o.status === 'done' &&
+      (o) => o.status === 'done' &&
         Date.now() - new Date(o.created_at).getTime() > TABLE_RESET_MS,
     )
     if (expired.length > 0) {
@@ -127,7 +101,6 @@ export default function DashboardPage() {
     }
   }, [tick, orders])
 
-  // Supabase: initial load + Realtime subscription
   useEffect(() => {
     supabase
       .from('orders')
@@ -136,10 +109,7 @@ export default function DashboardPage() {
       .order('created_at', { ascending: false })
       .then(({ data, error }) => {
         if (!error && data) {
-          // Filter out any orders the staff already dismissed this session
-          const visible = (data as Order[]).filter(
-            (o) => !clearedIds.current.has(o.id),
-          )
+          const visible = (data as Order[]).filter((o) => !clearedIds.current.has(o.id))
           setOrders(visible)
         }
         setLoading(false)
@@ -147,87 +117,68 @@ export default function DashboardPage() {
 
     const channel = supabase
       .channel('dashboard-orders')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'orders' },
-        (payload) => {
-          const id = (payload.new as Order)?.id || (payload.old as Order)?.id
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
+        const id = (payload.new as Order)?.id || (payload.old as Order)?.id
+        if (id && pendingUpdates.current.has(id)) { pendingUpdates.current.delete(id); return }
+        if (id && clearedIds.current.has(id)) return
 
-          // Skip our own optimistic updates
-          if (id && pendingUpdates.current.has(id)) {
-            pendingUpdates.current.delete(id)
-            return
+        if (payload.eventType === 'INSERT') {
+          const incoming = payload.new as Order
+          if (incoming.status !== 'cancelled') {
+            setOrders((prev) => [incoming, ...prev.filter((o) => o.id !== incoming.id)])
           }
-
-          // Skip orders the staff already cleared from the dashboard
-          if (id && clearedIds.current.has(id)) return
-
-          if (payload.eventType === 'INSERT') {
-            const incoming = payload.new as Order
-            if (incoming.status !== 'cancelled') {
-              setOrders((prev) => [incoming, ...prev.filter((o) => o.id !== incoming.id)])
-            }
+        }
+        if (payload.eventType === 'UPDATE') {
+          const updated = payload.new as Order
+          if (updated.status === 'cancelled') {
+            setOrders((prev) => prev.filter((o) => o.id !== updated.id))
+          } else {
+            setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)))
           }
-          if (payload.eventType === 'UPDATE') {
-            const updated = payload.new as Order
-            if (updated.status === 'cancelled') {
-              setOrders((prev) => prev.filter((o) => o.id !== updated.id))
-            } else {
-              setOrders((prev) =>
-                prev.map((o) => (o.id === updated.id ? updated : o)),
-              )
-            }
-          }
-          if (payload.eventType === 'DELETE') {
-            setOrders((prev) => prev.filter((o) => o.id !== (payload.old as Order).id))
-          }
-        },
-      )
+        }
+        if (payload.eventType === 'DELETE') {
+          setOrders((prev) => prev.filter((o) => o.id !== (payload.old as Order).id))
+        }
+      })
       .subscribe()
 
     return () => { supabase.removeChannel(channel) }
   }, [])
 
-  // Advance: new → preparing → done
   const advance = async (id: string) => {
     const order = orders.find((o) => o.id === id)
     if (!order) return
     const next: OrderStatus = order.status === 'new' ? 'preparing' : 'done'
-
     pendingUpdates.current.add(id)
-    setOrders((prev) =>
-      prev.map((o) => (o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o)),
-    )
-
+    setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o)))
     const { error } = await supabase.from('orders').update({ status: next }).eq('id', id)
     if (error) {
-      console.error('Failed to advance order:', error)
       pendingUpdates.current.delete(id)
       setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status: order.status } : o)))
     }
   }
 
-  /**
-   * Clear table — removes card from dashboard view only.
-   * Order stays 'done' in DB so History shows it correctly.
-   * Cleared ID is saved to localStorage so it doesn't come back on refresh.
-   */
   const clearTable = (id: string) => {
     clearedIds.current.add(id)
-    persistClearedId(id)                              // ← survives page refresh
+    persistClearedId(id)
     setOrders((prev) => prev.filter((o) => o.id !== id))
   }
 
-  const filtered     = filter === 'all' ? orders : orders.filter((o) => o.status === filter)
-  const newCount     = orders.filter((o) => o.status === 'new').length
-  const prepCount    = orders.filter((o) => o.status === 'preparing').length
-  const doneCount    = orders.filter((o) => o.status === 'done').length
-  const revenue      = orders.reduce((s, o) => s + o.total, 0)
+  const filtered  = filter === 'all' ? orders : orders.filter((o) => o.status === filter)
+  const newCount  = orders.filter((o) => o.status === 'new').length
+  const prepCount = orders.filter((o) => o.status === 'preparing').length
+  const doneCount = orders.filter((o) => o.status === 'done').length
+  const revenue   = orders.reduce((s, o) => s + o.total, 0)
   const activeTables = new Set(
-    orders
-      .filter((o) => o.status === 'new' || o.status === 'preparing')
-      .map((o) => o.table_number),
+    orders.filter((o) => o.status === 'new' || o.status === 'preparing').map((o) => o.table_number),
   )
+
+  const tableOrderCounts = orders
+    .filter((o) => o.status === 'new' || o.status === 'preparing')
+    .reduce<Record<string, number>>((acc, o) => {
+      acc[o.table_number] = (acc[o.table_number] ?? 0) + 1
+      return acc
+    }, {})
 
   const FILTER_TABS: { label: string; value: OrderStatus | 'all' }[] = [
     { label: 'All',       value: 'all' },
@@ -255,8 +206,6 @@ export default function DashboardPage() {
       </header>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
-
-        {/* Stats row */}
         <div className="grid grid-cols-4 gap-4">
           {[
             { label: 'Orders today', value: orders.length },
@@ -272,7 +221,6 @@ export default function DashboardPage() {
           ))}
         </div>
 
-        {/* Table occupancy strip */}
         <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${tables.length}, 1fr)` }}>
           {tables.map((n) => {
             const occupied = activeTables.has(String(n))
@@ -292,11 +240,9 @@ export default function DashboardPage() {
           })}
         </div>
 
-        {/* Filter tabs */}
         <div className="flex gap-2">
           {FILTER_TABS.map((tab) => (
-            <button key={tab.value}
-              onClick={() => setFilter(tab.value)}
+            <button key={tab.value} onClick={() => setFilter(tab.value)}
               className="text-xs px-4 py-1.5 rounded-full border transition-all"
               style={{
                 background:  filter === tab.value ? 'var(--espresso)' : '#fff',
@@ -308,7 +254,6 @@ export default function DashboardPage() {
           ))}
         </div>
 
-        {/* Orders grid */}
         {loading ? (
           <div className="text-center py-24" style={{ color: 'rgba(28,15,8,0.25)' }}>
             <p className="text-sm">Loading orders…</p>
@@ -319,8 +264,7 @@ export default function DashboardPage() {
             <p className="text-sm">No orders yet — waiting for customers</p>
           </div>
         ) : (
-          <div className="grid gap-4"
-            style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+          <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
             {filtered.map((order) => (
               <OrderCard
                 key={order.id}
@@ -328,6 +272,10 @@ export default function DashboardPage() {
                 tick={tick}
                 onAdvance={advance}
                 onClear={clearTable}
+                isAddOn={
+                  (tableOrderCounts[order.table_number] ?? 0) > 1 &&
+                  order.status !== 'done'
+                }
               />
             ))}
           </div>
@@ -337,14 +285,14 @@ export default function DashboardPage() {
   )
 }
 
-// ── Order Card ────────────────────────────────────────────────────────────────
 function OrderCard({
-  order, tick, onAdvance, onClear,
+  order, tick, onAdvance, onClear, isAddOn,
 }: {
   order: Order
   tick: number
   onAdvance: (id: string) => void
   onClear: (id: string) => void
+  isAddOn: boolean
 }) {
   const secs    = secondsLeft(order.created_at)
   const pct     = Math.round((secs / (ORDER_DURATION_MS / 1000)) * 100)
@@ -354,7 +302,6 @@ function OrderCard({
     <div className="bg-white rounded-xl border overflow-hidden"
       style={{ borderColor: overdue ? 'rgba(192,57,43,0.4)' : 'rgba(28,15,8,0.08)' }}>
 
-      {/* Countdown progress bar */}
       {order.status !== 'done' && (
         <div className="h-1 w-full" style={{ background: 'rgba(28,15,8,0.06)' }}>
           <div className="h-full transition-all duration-1000"
@@ -365,11 +312,18 @@ function OrderCard({
         </div>
       )}
 
-      {/* Card header */}
       <div className="px-4 py-3 flex justify-between items-start border-b"
         style={{ borderColor: 'rgba(28,15,8,0.06)' }}>
         <div>
-          <p className="font-medium text-sm">#{order.id.slice(-4).toUpperCase()}</p>
+          <p className="font-medium text-sm">
+            #{order.id.slice(-4).toUpperCase()}
+            {isAddOn && (
+              <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full font-normal"
+                style={{ background: '#DBEAFE', color: '#1D4ED8' }}>
+                Add-on
+              </span>
+            )}
+          </p>
           <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>
             Table {order.table_number}
             {order.customer_name ? ` · ${order.customer_name}` : ''}
@@ -388,7 +342,6 @@ function OrderCard({
         </div>
       </div>
 
-      {/* Items list */}
       <div className="px-4 py-3 space-y-1.5 border-b" style={{ borderColor: 'rgba(28,15,8,0.06)' }}>
         {order.items.map((item, i) => (
           <div key={i} className="flex justify-between text-sm">
@@ -402,7 +355,6 @@ function OrderCard({
         ))}
       </div>
 
-      {/* Footer */}
       <div className="px-4 py-3 flex items-center justify-between">
         <span className="text-sm font-medium">{formatPrice(order.total)}</span>
         <div className="flex gap-2">

@@ -39,6 +39,7 @@ export interface MenuItem {
   price: number
   category: MenuCategory | string
   emoji: string
+  image_url?: string
   available: boolean
   customizations?: Customization[]
   created_at: string

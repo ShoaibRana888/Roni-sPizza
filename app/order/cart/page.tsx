@@ -4,14 +4,8 @@
  *          - Shows all items with correct size-based pricing
  *          - Quantity adjustments and item removal
  *          - Optional customer name field
- *          - "Place order" submits to Supabase
- *
- * FIX — Duplicate orders: placeOrder now uses a `submitting` state flag.
- *   The button is disabled immediately on first tap and shows "Placing order…"
- *   so a double-tap or slow network cannot fire two inserts.
- *
- * FIX — Variant targeting: removeItem and updateQuantity pass selectedOptions
- *   so the correct size variant is removed/updated.
+ *          - "Place order" / "Add to order" submits to Supabase
+ *          - ?addOn=1 param changes labels and preserves navigation context
  */
 
 'use client'
@@ -23,39 +17,37 @@ import { formatPrice } from '@/lib/utils'
 import { supabase } from '../../../lib/supabase'
 
 function CartPageInner() {
-  const router = useRouter()
+  const router       = useRouter()
   const searchParams = useSearchParams()
-  const table = searchParams.get('table') || '1'
+  const table        = searchParams.get('table') || '1'
+  const addOn        = searchParams.get('addOn') === '1'
 
   const { items, updateQuantity, removeItem, total, itemCount, customerName, setCustomerName } = useCartStore()
 
-  // ── Duplicate-order guard ─────────────────────────────────────────────────────
   const [submitting, setSubmitting] = useState(false)
 
   const placeOrder = async () => {
     if (items.length === 0 || submitting) return
-    setSubmitting(true)                        // disable button immediately
+    setSubmitting(true)
 
     const { data, error } = await supabase.from('orders').insert({
-      table_number: table,
+      table_number:  table,
       customer_name: customerName || null,
       items,
-      total: total(),
-      status: 'new',
+      total:         total(),
+      status:        'new',
     }).select().single()
 
     if (error) {
       console.error('Order failed:', error)
-      setSubmitting(false)                     // re-enable on failure so user can retry
+      setSubmitting(false)
       return
     }
 
     sessionStorage.setItem(`ronis_table_${table}_order_time`, String(Date.now()))
     router.push(`/order/confirm?table=${table}&orderId=${data.id}`)
-    // Note: don't setSubmitting(false) here — page navigates away
   }
 
-  // ── Empty cart ────────────────────────────────────────────────────────────────
   if (items.length === 0) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center"
@@ -63,7 +55,7 @@ function CartPageInner() {
         <span className="text-5xl mb-4">🛒</span>
         <p className="font-serif text-xl mb-2">Your cart is empty</p>
         <p className="text-sm mb-6" style={{ color: 'rgba(28,15,8,0.45)' }}>Add something from the menu</p>
-        <button onClick={() => router.push(`/order?table=${table}`)}
+        <button onClick={() => router.push(`/order?table=${table}${addOn ? '&addOn=1' : ''}`)}
           className="px-6 py-3 rounded-xl text-white text-sm font-medium"
           style={{ background: 'var(--espresso)' }}>
           Back to menu
@@ -75,18 +67,15 @@ function CartPageInner() {
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--cream)' }}>
 
-      {/* Header */}
       <div className="sticky top-0 z-10 bg-white border-b flex items-center gap-3 px-5 py-4"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
-        <button onClick={() => router.push(`/order?table=${table}`)}
+        <button onClick={() => router.push(`/order?table=${table}${addOn ? '&addOn=1' : ''}`)}
           className="text-xl" style={{ color: 'rgba(28,15,8,0.45)' }}>←</button>
-        <h1 className="font-serif text-xl">Your cart</h1>
+        <h1 className="font-serif text-xl">{addOn ? 'Add more items' : 'Your cart'}</h1>
         <span className="ml-auto text-xs" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {table}</span>
       </div>
 
       <div className="flex-1 p-5 space-y-3 pb-48">
-
-        {/* Cart items */}
         {items.map((cartItem, i) => {
           const itemPrice = resolveItemPrice(cartItem)
           return (
@@ -95,31 +84,25 @@ function CartPageInner() {
               <span className="text-2xl">{cartItem.menuItem.emoji}</span>
               <div className="flex-1 min-w-0">
                 <p className="font-medium text-sm">{cartItem.menuItem.name}</p>
-
                 {cartItem.selectedOptions && Object.keys(cartItem.selectedOptions).length > 0 && (
                   <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>
                     {Object.values(cartItem.selectedOptions).join(' · ')}
                   </p>
                 )}
-
                 {cartItem.notes && (
                   <p className="text-xs mt-0.5 italic" style={{ color: 'rgba(28,15,8,0.4)' }}>
                     "{cartItem.notes}"
                   </p>
                 )}
-
                 <p className="text-sm mt-1 font-medium" style={{ color: 'var(--latte)' }}>
                   {formatPrice(itemPrice * cartItem.quantity)}
                 </p>
               </div>
 
               <div className="flex flex-col items-end gap-2">
-                {/* Remove — passes selectedOptions to target correct variant */}
                 <button
                   onClick={() => removeItem(cartItem.menuItem.id, cartItem.selectedOptions)}
                   className="text-xs" style={{ color: 'rgba(28,15,8,0.3)' }}>✕</button>
-
-                {/* Quantity stepper */}
                 <div className="flex items-center gap-2 border rounded-lg px-2 py-1"
                   style={{ borderColor: 'rgba(28,15,8,0.12)' }}>
                   <button
@@ -135,7 +118,6 @@ function CartPageInner() {
           )
         })}
 
-        {/* Optional name */}
         <div className="bg-white rounded-2xl border p-4" style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
           <p className="text-xs font-medium mb-2" style={{ color: 'rgba(28,15,8,0.45)' }}>
             Your name (optional)
@@ -146,7 +128,6 @@ function CartPageInner() {
         </div>
       </div>
 
-      {/* Fixed bottom bar */}
       <div className="fixed bottom-0 left-0 right-0 p-5 bg-white border-t space-y-3"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <div className="flex justify-between text-sm">
@@ -156,17 +137,14 @@ function CartPageInner() {
           <span className="font-medium">{formatPrice(total())}</span>
         </div>
 
-        {/* FIX: disabled + text change while submitting prevents double-insert */}
         <button
           onClick={placeOrder}
           disabled={submitting}
           className="w-full py-4 rounded-2xl text-white font-medium text-sm transition-all"
-          style={{
-            background: submitting ? 'rgba(28,15,8,0.3)' : 'var(--espresso)',
-          }}>
+          style={{ background: submitting ? 'rgba(28,15,8,0.3)' : 'var(--espresso)' }}>
           {submitting
-            ? 'Placing order…'
-            : `Place order · ${formatPrice(total())}`}
+            ? (addOn ? 'Adding items…' : 'Placing order…')
+            : (addOn ? `Add to order · ${formatPrice(total())}` : `Place order · ${formatPrice(total())}`)}
         </button>
 
         <p className="text-center text-xs" style={{ color: 'rgba(28,15,8,0.3)' }}>

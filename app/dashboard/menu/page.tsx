@@ -15,17 +15,29 @@ const CATEGORIES = ['Classic Pizzas', "Roni's Specials", 'Protein Specials', 'Dr
 
 const BLANK_FORM = {
   name: '', description: '', price: '', category: CATEGORIES[0], emoji: '🍕', available: true,
+  imageFile: null as File | null,
+}
+
+async function uploadImage(file: File): Promise<string | null> {
+  const ext = file.name.split('.').pop()
+  const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+  const { error } = await supabase.storage
+    .from('menu-images')
+    .upload(path, file, { cacheControl: '3600', upsert: false })
+  if (error) { console.error('Image upload failed:', error); return null }
+  const { data } = supabase.storage.from('menu-images').getPublicUrl(path)
+  return data.publicUrl
 }
 
 export default function MenuPage() {
-  const [items, setItems]       = useState<MenuItem[]>([])
-  const [loading, setLoading]   = useState(true)
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm]         = useState(BLANK_FORM)
-  const [saving, setSaving]     = useState(false)
-  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [items, setItems]         = useState<MenuItem[]>([])
+  const [loading, setLoading]     = useState(true)
+  const [showForm, setShowForm]   = useState(false)
+  const [form, setForm]           = useState(BLANK_FORM)
+  const [saving, setSaving]       = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [deleteId, setDeleteId]   = useState<string | null>(null)
 
-  // Fetch all menu items on mount
   useEffect(() => {
     supabase
       .from('menu_items')
@@ -37,28 +49,40 @@ export default function MenuPage() {
       })
   }, [])
 
-  // Toggle availability
   const toggle = async (item: MenuItem) => {
     const next = !item.available
     setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, available: next } : i)))
     await supabase.from('menu_items').update({ available: next }).eq('id', item.id)
   }
 
-  // Add new item
   const addItem = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
 
+    if (form.imageFile && form.imageFile.size > 2 * 1024 * 1024) {
+      alert('Image must be under 2 MB')
+      setSaving(false)
+      return
+    }
+
+    let image_url: string | null = null
+    if (form.imageFile) {
+      setUploading(true)
+      image_url = await uploadImage(form.imageFile)
+      setUploading(false)
+    }
+
     const { data, error } = await supabase
       .from('menu_items')
       .insert({
-        name:        form.name.trim(),
-        description: form.description.trim(),
-        price:       parseInt(form.price),
-        category:    form.category,
-        emoji:       form.emoji || '🍕',
-        available:   true,
+        name:           form.name.trim(),
+        description:    form.description.trim(),
+        price:          parseInt(form.price),
+        category:       form.category,
+        emoji:          form.emoji || '🍕',
+        available:      true,
         customizations: [],
+        image_url,
       })
       .select()
       .single()
@@ -71,7 +95,6 @@ export default function MenuPage() {
     setSaving(false)
   }
 
-  // Delete item (confirm inline)
   const deleteItem = async (id: string) => {
     setItems((prev) => prev.filter((i) => i.id !== id))
     setDeleteId(null)
@@ -106,7 +129,15 @@ export default function MenuPage() {
                 <div key={item.id}
                   className="bg-white rounded-xl border p-4 flex gap-3 transition-all"
                   style={{ borderColor: 'rgba(28,15,8,0.08)', opacity: item.available ? 1 : 0.5 }}>
-                  <span className="text-2xl">{item.emoji}</span>
+                  {item.image_url ? (
+                    <img
+                      src={item.image_url}
+                      alt={item.name}
+                      className="w-12 h-12 rounded-xl object-cover shrink-0"
+                    />
+                  ) : (
+                    <span className="text-2xl">{item.emoji}</span>
+                  )}
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-sm">{item.name}</p>
                     <p className="text-xs mt-0.5 line-clamp-2" style={{ color: 'rgba(28,15,8,0.45)' }}>
@@ -118,7 +149,6 @@ export default function MenuPage() {
                   </div>
 
                   <div className="flex flex-col items-end gap-2 shrink-0">
-                    {/* Availability toggle */}
                     <button onClick={() => toggle(item)}
                       className="w-10 h-6 rounded-full relative transition-all"
                       style={{ background: item.available ? 'var(--sage)' : 'rgba(28,15,8,0.12)' }}>
@@ -126,7 +156,6 @@ export default function MenuPage() {
                         style={{ left: item.available ? '20px' : '4px' }} />
                     </button>
 
-                    {/* Delete */}
                     {deleteId === item.id ? (
                       <div className="flex gap-1">
                         <button onClick={() => deleteItem(item.id)}
@@ -151,7 +180,6 @@ export default function MenuPage() {
         ))}
       </div>
 
-      {/* Add item modal */}
       {showForm && (
         <div className="fixed inset-0 z-40 flex items-center justify-center"
           style={{ background: 'rgba(28,15,8,0.4)' }}
@@ -205,16 +233,34 @@ export default function MenuPage() {
                 </div>
               </div>
 
+              <div>
+                <label className="text-xs font-medium mb-1 block" style={{ color: 'rgba(28,15,8,0.5)' }}>
+                  Photo (optional, max 2 MB)
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setForm({ ...form, imageFile: e.target.files?.[0] ?? null })}
+                  className="w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:cursor-pointer"
+                  style={{ color: 'rgba(28,15,8,0.5)' }}
+                />
+                {form.imageFile && (
+                  <p className="text-xs mt-1" style={{ color: 'rgba(28,15,8,0.4)' }}>
+                    {form.imageFile.name}
+                  </p>
+                )}
+              </div>
+
               <div className="flex gap-3 mt-2">
                 <button type="button" onClick={() => setShowForm(false)}
                   className="flex-1 py-2.5 rounded-xl text-sm border"
                   style={{ borderColor: 'rgba(28,15,8,0.15)', color: 'rgba(28,15,8,0.5)' }}>
                   Cancel
                 </button>
-                <button type="submit" disabled={saving}
+                <button type="submit" disabled={saving || uploading}
                   className="flex-1 py-2.5 rounded-xl text-sm text-white font-medium"
-                  style={{ background: saving ? 'rgba(28,15,8,0.3)' : 'var(--espresso)' }}>
-                  {saving ? 'Adding…' : 'Add item'}
+                  style={{ background: (saving || uploading) ? 'rgba(28,15,8,0.3)' : 'var(--espresso)' }}>
+                  {uploading ? 'Uploading…' : saving ? 'Adding…' : 'Add item'}
                 </button>
               </div>
             </form>
