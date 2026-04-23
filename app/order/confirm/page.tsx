@@ -1,6 +1,8 @@
 /**
  * FILE: app/order/confirm/page.tsx
  * PURPOSE: Live order-tracking screen shown to customers after placing an order.
+ *          Fetches ALL active orders for the table (not just the latest one)
+ *          and displays them combined — items from every order, one total.
  * ROUTE: /order/confirm?table=1&orderId=<uuid>
  */
 
@@ -67,37 +69,67 @@ const STEPS: { icon: string; text: string; activeOn: OrderStatus[] }[] = [
   { icon: '💳', text: 'Pay at the counter', activeOn: [] },
 ]
 
+/**
+ * Derive the "dominant" status across all table orders.
+ * Priority: preparing > new > done > cancelled
+ */
+function dominantStatus(orders: Order[]): OrderStatus {
+  const active = orders.filter((o) => o.status !== 'cancelled')
+  if (active.some((o) => o.status === 'preparing')) return 'preparing'
+  if (active.some((o) => o.status === 'new'))        return 'new'
+  if (active.some((o) => o.status === 'done'))       return 'done'
+  return 'cancelled'
+}
+
 function ConfirmPageInner() {
   const searchParams = useSearchParams()
   const router       = useRouter()
   const table        = searchParams.get('table')   || '1'
-  const orderId      = searchParams.get('orderId') || ''
+  const orderId      = searchParams.get('orderId') || ''  // the most-recent order, used for ref + timer
 
   const { clearCart } = useCartStore()
 
-  const [order, setOrder]     = useState<Order | null>(null)
+  // All orders for this table (non-cancelled, active)
+  const [orders, setOrders]   = useState<Order[]>([])
+  const [latestOrder, setLatestOrder] = useState<Order | null>(null)
   const [tick, setTick]       = useState(0)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { clearCart() }, [clearCart])
 
   useEffect(() => {
-    if (!orderId) return
+    if (!table) return
 
-    const fetchOrder = async () => {
-      const { data, error } = await supabase
+    const fetchOrders = async () => {
+      // Fetch ALL active orders for this table
+      const { data: tableOrders, error } = await supabase
         .from('orders')
         .select('*')
-        .eq('id', orderId)
-        .single()
-      if (!error && data) setOrder(data as Order)
+        .eq('table_number', table)
+        .in('status', ['new', 'preparing', 'done'])
+        .order('created_at', { ascending: true })
+
+      if (!error && tableOrders) {
+        setOrders(tableOrders as Order[])
+      }
+
+      // Also fetch the specific order for the ref number / timer baseline
+      if (orderId) {
+        const { data: single } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('id', orderId)
+          .single()
+        if (single) setLatestOrder(single as Order)
+      }
+
       setLoading(false)
     }
 
-    fetchOrder()
-    const poll = setInterval(fetchOrder, POLL_INTERVAL_MS)
+    fetchOrders()
+    const poll = setInterval(fetchOrders, POLL_INTERVAL_MS)
     return () => clearInterval(poll)
-  }, [orderId])
+  }, [table, orderId])
 
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 1000)
@@ -113,7 +145,7 @@ function ConfirmPageInner() {
     )
   }
 
-  if (!order) {
+  if (orders.length === 0 && !latestOrder) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center"
         style={{ background: 'var(--cream)' }}>
@@ -122,78 +154,64 @@ function ConfirmPageInner() {
         <p className="text-sm mb-6" style={{ color: 'rgba(28,15,8,0.45)' }}>
           Something went wrong. Please visit the counter.
         </p>
-        <button onClick={() => router.push(`/order?table=${table}`)}
-          className="px-6 py-3 rounded-xl text-white text-sm font-medium"
-          style={{ background: 'var(--espresso)' }}>
-          Back to menu
-        </button>
       </div>
     )
   }
 
-  const status  = order.status as OrderStatus
-  const cfg     = STATUS_CONFIG[status] ?? STATUS_CONFIG.new
-  const secs    = secondsLeft(order.created_at)
-  const pct     = Math.round((secs / (ORDER_DURATION_MS / 1000)) * 100)
-  const overdue = secs === 0 && status !== 'done' && status !== 'cancelled'
-  const isDone  = status === 'done'
+  // Use latest order for ref + countdown anchor, fall back to first in list
+  const refOrder   = latestOrder ?? orders[orders.length - 1]
+  const status     = dominantStatus(orders.length > 0 ? orders : [refOrder!])
+  const cfg        = STATUS_CONFIG[status]
+  const isDone     = status === 'done'
+  const secs       = refOrder ? secondsLeft(refOrder.created_at) : 0
+
+  // Combine ALL items from ALL table orders into one flat list
+  const allItems = orders.flatMap((o) => o.items)
+
+  // Combined total across all orders
+  const combinedTotal = orders.reduce((sum, o) => sum + o.total, 0)
 
   return (
-    <div className="min-h-screen flex flex-col items-center p-6 pt-12"
+    <div className="min-h-screen flex flex-col items-center px-5 py-8"
       style={{ background: 'var(--cream)' }}>
 
-      <div className="w-full max-w-sm bg-white rounded-3xl border overflow-hidden shadow-sm mb-6"
+      {/* Status card */}
+      <div className="w-full max-w-sm bg-white rounded-2xl border overflow-hidden mb-4"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
+        <div className="h-1.5 w-full" style={{ background: cfg.bg }}>
+          <div className="h-full" style={{ width: '100%', background: cfg.color, opacity: 0.6 }} />
+        </div>
 
-        {!isDone && status !== 'cancelled' && (
-          <div className="h-1.5 w-full" style={{ background: 'rgba(28,15,8,0.06)' }}>
-            <div
-              className="h-full transition-all duration-1000"
-              style={{
-                width: `${pct}%`,
-                background: overdue ? '#C0392B' : pct > 40 ? 'var(--sage)' : 'var(--latte)',
-              }}
-            />
-          </div>
-        )}
-
-        <div className="flex flex-col items-center pt-8 pb-6 px-6 text-center">
-          <div
-            className="w-20 h-20 rounded-full flex items-center justify-center text-4xl mb-4"
+        <div className="p-5 flex flex-col items-center text-center">
+          <div className="w-16 h-16 rounded-full flex items-center justify-center mb-3 text-3xl"
             style={{ background: cfg.bg }}>
             {cfg.icon}
           </div>
-          <h1 className="font-serif text-2xl mb-1">{cfg.headline}</h1>
+          <h1 className="font-serif text-xl mb-1">{cfg.headline}</h1>
           <p className="text-sm" style={{ color: 'rgba(28,15,8,0.5)' }}>{cfg.sub}</p>
         </div>
 
-        <div className="border-t flex divide-x"
-          style={{ borderColor: 'rgba(28,15,8,0.07)', color: 'rgba(28,15,8,0.45)' }}>
-          <div className="flex-1 py-3 text-center">
-            <p className="text-xs mb-0.5">Table</p>
-            <p className="text-sm font-medium" style={{ color: 'var(--espresso)' }}>{table}</p>
+        <div className="grid grid-cols-3 border-t"
+          style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
+          <div className="flex flex-col items-center py-3 border-r"
+            style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
+            <span className="text-xs mb-0.5" style={{ color: 'rgba(28,15,8,0.35)' }}>Table</span>
+            <span className="text-sm font-medium">{table}</span>
           </div>
-          <div className="flex-1 py-3 text-center">
-            <p className="text-xs mb-0.5">Ref</p>
-            <p className="text-sm font-medium font-mono" style={{ color: 'var(--espresso)' }}>
-              #{orderId.slice(-6).toUpperCase()}
-            </p>
+          <div className="flex flex-col items-center py-3 border-r"
+            style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
+            <span className="text-xs mb-0.5" style={{ color: 'rgba(28,15,8,0.35)' }}>Ref</span>
+            <span className="text-sm font-medium">#{refOrder?.id.slice(-6).toUpperCase()}</span>
           </div>
-          <div className="flex-1 py-3 text-center">
-            <p className="text-xs mb-0.5">{isDone ? 'Status' : 'Est. time'}</p>
-            {isDone ? (
-              <p className="text-sm font-medium" style={{ color: 'var(--sage)' }}>Ready! 🎉</p>
-            ) : (
-              <p className="text-sm font-medium font-mono tabular-nums"
-                style={{ color: overdue ? '#C0392B' : 'var(--espresso)' }}>
-                {overdue ? 'Overdue' : fmtCountdown(secs)}
-              </p>
-            )}
+          <div className="flex flex-col items-center py-3">
+            <span className="text-xs mb-0.5" style={{ color: 'rgba(28,15,8,0.35)' }}>Est. time</span>
+            <span className="text-sm font-medium">{fmtCountdown(secs)}</span>
           </div>
         </div>
       </div>
 
-      <div className="w-full max-w-sm bg-white rounded-2xl border p-5 mb-6"
+      {/* Order progress */}
+      <div className="w-full max-w-sm bg-white rounded-2xl border p-5 mb-4"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <p className="text-xs font-medium uppercase tracking-wider mb-4"
           style={{ color: 'rgba(28,15,8,0.35)' }}>Order progress</p>
@@ -203,8 +221,7 @@ function ConfirmPageInner() {
             const active = step.activeOn.includes(status)
             return (
               <div key={i} className="flex items-center gap-3">
-                <div
-                  className="w-7 h-7 rounded-full flex items-center justify-center text-xs flex-shrink-0 transition-all"
+                <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0 transition-all"
                   style={{
                     background: active ? 'var(--espresso)' : 'rgba(28,15,8,0.07)',
                     color:      active ? '#fff'            : 'rgba(28,15,8,0.25)',
@@ -228,13 +245,21 @@ function ConfirmPageInner() {
         </div>
       </div>
 
+      {/* Combined order items — ALL orders for this table */}
       <div className="w-full max-w-sm bg-white rounded-2xl border p-5 mb-4"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <p className="text-xs font-medium uppercase tracking-wider mb-4"
           style={{ color: 'rgba(28,15,8,0.35)' }}>Your order</p>
 
+        {orders.length > 1 && (
+          <p className="text-xs mb-3 px-2 py-1.5 rounded-lg"
+            style={{ background: 'rgba(28,15,8,0.04)', color: 'rgba(28,15,8,0.45)' }}>
+            {orders.length} rounds combined · all items shown below
+          </p>
+        )}
+
         <div className="space-y-2">
-          {order.items.map((item, i) => {
+          {allItems.map((item, i) => {
             const unitPrice = resolveItemPrice(item)
             return (
               <div key={i} className="flex items-start gap-2 text-sm">
@@ -261,10 +286,11 @@ function ConfirmPageInner() {
         <div className="border-t mt-4 pt-3 flex justify-between text-sm font-medium"
           style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
           <span>Total</span>
-          <span>{formatPrice(order.total)}</span>
+          <span>{formatPrice(combinedTotal)}</span>
         </div>
       </div>
 
+      {/* Add more items button — only when order is still active */}
       {(status === 'new' || status === 'preparing') && (
         <button
           onClick={() => router.push(`/order?table=${table}&addOn=1`)}
