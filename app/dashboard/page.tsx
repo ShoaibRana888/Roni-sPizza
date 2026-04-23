@@ -1,13 +1,12 @@
 /**
  * FILE: app/dashboard/page.tsx
  * PURPOSE: Main dashboard for Roni's Pizza staff.
- *          - Live order cards with 25-minute countdown progress bar
- *          - Supabase Realtime — new orders appear instantly
- *          - Status: new → preparing → done → (dismissed from dashboard)
+ *          - Orders are GROUPED BY TABLE — one card per table
+ *          - "Start preparing" / "Mark ready" advances ALL orders for that table at once
+ *            so the customer always sees the correct combined status
  *          - "Clear table" hides the card from dashboard WITHOUT touching DB
- *            so the order stays 'done' in history (not 'cancelled')
- *          - Cleared IDs persist in localStorage with a 24-hour TTL so
- *            cleared orders don't reappear after a page refresh
+ *          - Supabase Realtime — new orders appear instantly
+ *          - Cleared IDs persist in localStorage with a 24-hour TTL
  * ROUTE: /dashboard
  */
 
@@ -17,11 +16,11 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase, Order, OrderStatus } from '@/lib/supabase'
 import { formatPrice, STATUS_COLORS, STATUS_LABELS } from '@/lib/utils'
 
-const ORDER_DURATION_MS  = 25 * 60 * 1000
-const TABLE_RESET_MS     = 60 * 60 * 1000
-const STORAGE_KEY        = 'ronis_table_count'
-const CLEARED_KEY        = 'ronis_cleared_orders'
-const CLEARED_TTL_MS     = 24 * 60 * 60 * 1000
+const ORDER_DURATION_MS = 25 * 60 * 1000
+const TABLE_RESET_MS    = 60 * 60 * 1000
+const STORAGE_KEY       = 'ronis_table_count'
+const CLEARED_KEY       = 'ronis_cleared_orders'
+const CLEARED_TTL_MS    = 24 * 60 * 60 * 1000
 
 function loadClearedIds(): Set<string> {
   try {
@@ -60,6 +59,24 @@ function fmtCountdown(secs: number): string {
   return `${m}:${s}`
 }
 
+/** Group an array of orders by table_number */
+function groupByTable(orders: Order[]): Map<string, Order[]> {
+  const map = new Map<string, Order[]>()
+  for (const o of orders) {
+    const existing = map.get(o.table_number) ?? []
+    map.set(o.table_number, [...existing, o])
+  }
+  return map
+}
+
+/** Derive the dominant status for a group of orders */
+function groupStatus(orders: Order[]): OrderStatus {
+  if (orders.some((o) => o.status === 'new'))        return 'new'
+  if (orders.some((o) => o.status === 'preparing'))  return 'preparing'
+  if (orders.some((o) => o.status === 'done'))       return 'done'
+  return 'cancelled'
+}
+
 export default function DashboardPage() {
   const [orders, setOrders]   = useState<Order[]>([])
   const [tick, setTick]       = useState(0)
@@ -91,6 +108,7 @@ export default function DashboardPage() {
     return () => clearInterval(t)
   }, [])
 
+  // Auto-remove done orders older than TABLE_RESET_MS
   useEffect(() => {
     const expired = orders.filter(
       (o) =>
@@ -108,12 +126,10 @@ export default function DashboardPage() {
       .from('orders')
       .select('*')
       .not('status', 'eq', 'cancelled')
-      .order('created_at', { ascending: false })
+      .order('created_at', { ascending: true })
       .then(({ data, error }) => {
         if (!error && data) {
-          const visible = (data as Order[]).filter(
-            (o) => !clearedIds.current.has(o.id),
-          )
+          const visible = (data as Order[]).filter((o) => !clearedIds.current.has(o.id))
           setOrders(visible)
         }
         setLoading(false)
@@ -126,18 +142,13 @@ export default function DashboardPage() {
         { event: '*', schema: 'public', table: 'orders' },
         (payload) => {
           const id = (payload.new as Order)?.id || (payload.old as Order)?.id
-
-          if (id && pendingUpdates.current.has(id)) {
-            pendingUpdates.current.delete(id)
-            return
-          }
-
+          if (id && pendingUpdates.current.has(id)) { pendingUpdates.current.delete(id); return }
           if (id && clearedIds.current.has(id)) return
 
           if (payload.eventType === 'INSERT') {
             const incoming = payload.new as Order
             if (incoming.status !== 'cancelled') {
-              setOrders((prev) => [incoming, ...prev.filter((o) => o.id !== incoming.id)])
+              setOrders((prev) => [...prev.filter((o) => o.id !== incoming.id), incoming])
             }
           }
           if (payload.eventType === 'UPDATE') {
@@ -145,9 +156,7 @@ export default function DashboardPage() {
             if (updated.status === 'cancelled') {
               setOrders((prev) => prev.filter((o) => o.id !== updated.id))
             } else {
-              setOrders((prev) =>
-                prev.map((o) => (o.id === updated.id ? updated : o)),
-              )
+              setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)))
             }
           }
           if (payload.eventType === 'DELETE') {
@@ -160,47 +169,58 @@ export default function DashboardPage() {
     return () => { supabase.removeChannel(channel) }
   }, [])
 
-  const advance = async (id: string) => {
-    const order = orders.find((o) => o.id === id)
-    if (!order) return
-    const next: OrderStatus = order.status === 'new' ? 'preparing' : 'done'
+  /** Advance ALL orders in a table group to the next status */
+  const advanceTable = async (tableOrders: Order[]) => {
+    const current = groupStatus(tableOrders)
+    const next: OrderStatus = current === 'new' ? 'preparing' : 'done'
 
-    pendingUpdates.current.add(id)
+    // Optimistic update
+    const ids = tableOrders.map((o) => o.id)
+    ids.forEach((id) => pendingUpdates.current.add(id))
     setOrders((prev) =>
-      prev.map((o) => (o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o)),
+      prev.map((o) => ids.includes(o.id) ? { ...o, status: next, updated_at: new Date().toISOString() } : o),
     )
 
-    const { error } = await supabase.from('orders').update({ status: next }).eq('id', id)
-    if (error) {
-      console.error('Failed to advance order:', error)
-      pendingUpdates.current.delete(id)
-      setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status: order.status } : o)))
-    }
+    // Persist each order
+    await Promise.all(
+      ids.map((id) => supabase.from('orders').update({ status: next }).eq('id', id))
+    )
   }
 
-  const clearTable = (id: string) => {
-    clearedIds.current.add(id)
-    persistClearedId(id)
-    setOrders((prev) => prev.filter((o) => o.id !== id))
+  /** Clear all orders for a table from dashboard view */
+  const clearTable = (tableOrders: Order[]) => {
+    tableOrders.forEach((o) => {
+      clearedIds.current.add(o.id)
+      persistClearedId(o.id)
+    })
+    const ids = tableOrders.map((o) => o.id)
+    setOrders((prev) => prev.filter((o) => !ids.includes(o.id)))
   }
 
-  const filtered     = filter === 'all' ? orders : orders.filter((o) => o.status === filter)
-  const newCount     = orders.filter((o) => o.status === 'new').length
-  const prepCount    = orders.filter((o) => o.status === 'preparing').length
-  const doneCount    = orders.filter((o) => o.status === 'done').length
-  const revenue      = orders.reduce((s, o) => s + o.total, 0)
+  // Group orders by table
+  const tableGroups = groupByTable(orders)
+
+  // For filter tabs — derive status per group
+  const allGroups    = Array.from(tableGroups.entries()).map(([tbl, grpOrders]) => ({
+    table: tbl,
+    orders: grpOrders,
+    status: groupStatus(grpOrders),
+  }))
+
+  const filteredGroups = filter === 'all'
+    ? allGroups
+    : allGroups.filter((g) => g.status === filter)
+
+  const newCount  = allGroups.filter((g) => g.status === 'new').length
+  const prepCount = allGroups.filter((g) => g.status === 'preparing').length
+  const doneCount = allGroups.filter((g) => g.status === 'done').length
+  const revenue   = orders.reduce((s, o) => s + o.total, 0)
+
   const activeTables = new Set(
     orders
       .filter((o) => o.status === 'new' || o.status === 'preparing')
       .map((o) => o.table_number),
   )
-
-  const tableOrderCounts = orders
-    .filter((o) => o.status === 'new' || o.status === 'preparing')
-    .reduce<Record<string, number>>((acc, o) => {
-      acc[o.table_number] = (acc[o.table_number] ?? 0) + 1
-      return acc
-    }, {})
 
   const FILTER_TABS: { label: string; value: OrderStatus | 'all' }[] = [
     { label: 'All',       value: 'all' },
@@ -229,6 +249,7 @@ export default function DashboardPage() {
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
 
+        {/* Stats */}
         <div className="grid grid-cols-4 gap-4">
           {[
             { label: 'Orders today', value: orders.length },
@@ -244,6 +265,7 @@ export default function DashboardPage() {
           ))}
         </div>
 
+        {/* Table occupancy strip */}
         <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${tables.length}, 1fr)` }}>
           {tables.map((n) => {
             const occupied = activeTables.has(String(n))
@@ -263,6 +285,7 @@ export default function DashboardPage() {
           })}
         </div>
 
+        {/* Filter tabs */}
         <div className="flex gap-2">
           {FILTER_TABS.map((tab) => (
             <button key={tab.value}
@@ -278,11 +301,12 @@ export default function DashboardPage() {
           ))}
         </div>
 
+        {/* Table group cards */}
         {loading ? (
           <div className="text-center py-24" style={{ color: 'rgba(28,15,8,0.25)' }}>
             <p className="text-sm">Loading orders…</p>
           </div>
-        ) : filtered.length === 0 ? (
+        ) : filteredGroups.length === 0 ? (
           <div className="text-center py-24" style={{ color: 'rgba(28,15,8,0.25)' }}>
             <p className="text-4xl mb-3">🍕</p>
             <p className="text-sm">No orders yet — waiting for customers</p>
@@ -290,17 +314,14 @@ export default function DashboardPage() {
         ) : (
           <div className="grid gap-4"
             style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
-            {filtered.map((order) => (
-              <OrderCard
-                key={order.id}
-                order={order}
+            {filteredGroups.map((group) => (
+              <TableGroupCard
+                key={group.table}
+                tableNumber={group.table}
+                orders={group.orders}
                 tick={tick}
-                onAdvance={advance}
-                onClear={clearTable}
-                isAddOn={
-                  (tableOrderCounts[order.table_number] ?? 0) > 1 &&
-                  order.status !== 'done'
-                }
+                onAdvance={() => advanceTable(group.orders)}
+                onClear={() => clearTable(group.orders)}
               />
             ))}
           </div>
@@ -310,24 +331,37 @@ export default function DashboardPage() {
   )
 }
 
-function OrderCard({
-  order, tick, onAdvance, onClear, isAddOn,
+function TableGroupCard({
+  tableNumber, orders, tick, onAdvance, onClear,
 }: {
-  order: Order
+  tableNumber: string
+  orders: Order[]
   tick: number
-  onAdvance: (id: string) => void
-  onClear: (id: string) => void
-  isAddOn: boolean
+  onAdvance: () => void
+  onClear: () => void
 }) {
-  const secs    = secondsLeft(order.created_at)
-  const pct     = Math.round((secs / (ORDER_DURATION_MS / 1000)) * 100)
-  const overdue = secs === 0 && order.status !== 'done'
+  const status      = groupStatus(orders)
+  const isDone      = status === 'done'
+  // Use the earliest order for the countdown
+  const oldestOrder = orders[0]
+  const secs        = oldestOrder ? secondsLeft(oldestOrder.created_at) : 0
+  const pct         = Math.round((secs / (ORDER_DURATION_MS / 1000)) * 100)
+  const overdue     = secs === 0 && !isDone
+  const hasMultiple = orders.length > 1
+  const combinedTotal = orders.reduce((s, o) => s + o.total, 0)
+
+  // All items across all orders for this table
+  const allItems = orders.flatMap((o) => o.items)
+
+  // Customer name — use the first one found
+  const customerName = orders.find((o) => o.customer_name)?.customer_name
 
   return (
     <div className="bg-white rounded-xl border overflow-hidden"
       style={{ borderColor: overdue ? 'rgba(192,57,43,0.4)' : 'rgba(28,15,8,0.08)' }}>
 
-      {order.status !== 'done' && (
+      {/* Progress bar */}
+      {!isDone && (
         <div className="h-1 w-full" style={{ background: 'rgba(28,15,8,0.06)' }}>
           <div className="h-full transition-all duration-1000"
             style={{
@@ -337,28 +371,34 @@ function OrderCard({
         </div>
       )}
 
+      {/* Header */}
       <div className="px-4 py-3 flex justify-between items-start border-b"
         style={{ borderColor: 'rgba(28,15,8,0.06)' }}>
         <div>
           <p className="font-medium text-sm">
-            #{order.id.slice(-4).toUpperCase()}
-            {isAddOn && (
+            Table {tableNumber}
+            {hasMultiple && (
               <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full font-normal"
                 style={{ background: '#DBEAFE', color: '#1D4ED8' }}>
-                Add-on
+                {orders.length} rounds
               </span>
             )}
           </p>
           <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>
-            Table {order.table_number}
-            {order.customer_name ? ` · ${order.customer_name}` : ''}
+            {orders.map((o) => `#${o.id.slice(-4).toUpperCase()}`).join(' · ')}
+            {customerName ? ` · ${customerName}` : ''}
           </p>
         </div>
         <div className="flex flex-col items-end gap-1.5">
-          <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${STATUS_COLORS[order.status]}`}>
-            {STATUS_LABELS[order.status]}
+          <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+            status === 'new'       ? 'bg-amber-100 text-amber-800' :
+            status === 'preparing' ? 'bg-blue-100 text-blue-800' :
+            status === 'done'      ? 'bg-green-100 text-green-800' :
+            'bg-red-100 text-red-800'
+          }`}>
+            {STATUS_LABELS[status]}
           </span>
-          {order.status !== 'done' && (
+          {!isDone && (
             <span className="text-xs font-mono tabular-nums"
               style={{ color: overdue ? '#C0392B' : 'rgba(28,15,8,0.4)' }}>
               {overdue ? 'Overdue' : fmtCountdown(secs)}
@@ -367,11 +407,17 @@ function OrderCard({
         </div>
       </div>
 
+      {/* All items combined */}
       <div className="px-4 py-3 space-y-1.5 border-b" style={{ borderColor: 'rgba(28,15,8,0.06)' }}>
-        {order.items.map((item, i) => (
+        {allItems.map((item, i) => (
           <div key={i} className="flex justify-between text-sm">
             <span style={{ color: 'rgba(28,15,8,0.7)' }}>
               {item.quantity}× {item.menuItem.name}
+              {item.selectedOptions && Object.keys(item.selectedOptions).length > 0 && (
+                <span className="ml-1 text-xs" style={{ color: 'rgba(28,15,8,0.4)' }}>
+                  ({Object.values(item.selectedOptions).join(', ')})
+                </span>
+              )}
             </span>
             <span style={{ color: 'rgba(28,15,8,0.4)' }}>
               {formatPrice(item.menuItem.price * item.quantity)}
@@ -380,17 +426,18 @@ function OrderCard({
         ))}
       </div>
 
+      {/* Footer */}
       <div className="px-4 py-3 flex items-center justify-between">
-        <span className="text-sm font-medium">{formatPrice(order.total)}</span>
+        <span className="text-sm font-medium">{formatPrice(combinedTotal)}</span>
         <div className="flex gap-2">
-          {order.status !== 'done' ? (
-            <button onClick={() => onAdvance(order.id)}
+          {!isDone ? (
+            <button onClick={onAdvance}
               className="text-xs font-medium px-3 py-1.5 rounded-lg text-white"
-              style={{ background: order.status === 'new' ? 'var(--latte)' : 'var(--sage)' }}>
-              {order.status === 'new' ? 'Start preparing' : 'Mark ready'}
+              style={{ background: status === 'new' ? 'var(--latte)' : 'var(--sage)' }}>
+              {status === 'new' ? 'Start preparing' : 'Mark ready'}
             </button>
           ) : (
-            <button onClick={() => onClear(order.id)}
+            <button onClick={onClear}
               className="text-xs font-medium px-3 py-1.5 rounded-lg border"
               style={{ borderColor: 'rgba(28,15,8,0.15)', color: 'rgba(28,15,8,0.5)' }}>
               Clear table
