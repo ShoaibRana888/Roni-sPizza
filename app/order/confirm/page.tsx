@@ -73,12 +73,12 @@ const STEPS: { icon: string; text: string; activeOn: OrderStatus[] }[] = [
  * Derive the "dominant" status across all table orders.
  * Priority: preparing > new > done > cancelled
  */
-function dominantStatus(orders: Order[]): OrderStatus {
-  const active = orders.filter((o) => o.status !== 'cancelled')
-  if (active.some((o) => o.status === 'preparing')) return 'preparing'
-  if (active.some((o) => o.status === 'new'))        return 'new'
-  if (active.some((o) => o.status === 'done'))       return 'done'
-  return 'cancelled'
+function dominantStatus(orders: Order[], fallback?: Order | null): OrderStatus {
+  if (orders.some((o) => o.status === 'preparing')) return 'preparing'
+  if (orders.some((o) => o.status === 'new'))        return 'new'
+  // No active orders left — use latestOrder's status (e.g. 'done') as fallback
+  if (fallback) return fallback.status as OrderStatus
+  return 'done'
 }
 
 function ConfirmPageInner() {
@@ -106,7 +106,7 @@ function ConfirmPageInner() {
         .from('orders')
         .select('*')
         .eq('table_number', table)
-        .in('status', ['new', 'preparing', 'done'])
+        .in('status', ['new', 'preparing'])
         .order('created_at', { ascending: true })
 
       if (!error && tableOrders) {
@@ -158,18 +158,55 @@ function ConfirmPageInner() {
     )
   }
 
-  // Use latest order for ref + countdown anchor, fall back to first in list
-  const refOrder   = latestOrder ?? orders[orders.length - 1]
-  const status     = dominantStatus(orders.length > 0 ? orders : [refOrder!])
-  const cfg        = STATUS_CONFIG[status]
-  const isDone     = status === 'done'
-  const secs       = refOrder ? secondsLeft(refOrder.created_at) : 0
+  // When there are no active (new/preparing) orders, fall back to latestOrder alone
+  const hasActiveOrders = orders.length > 0
+  const refOrder        = latestOrder ?? orders[orders.length - 1]
+  const status          = dominantStatus(orders, latestOrder)
+  const cfg             = STATUS_CONFIG[status]
+  const isDone          = status === 'done'
+  const isCancelled     = status === 'cancelled'
+  const secs            = refOrder ? secondsLeft(refOrder.created_at) : 0
 
-  // Combine ALL items from ALL table orders into one flat list
-  const allItems = orders.flatMap((o) => o.items)
+  // If this specific order was cancelled, show a clean cancelled screen
+  if (isCancelled) {
+    return (
+      <div className="min-h-screen flex flex-col items-center px-5 py-8"
+        style={{ background: 'var(--cream)' }}>
+        <div className="w-full max-w-sm bg-white rounded-2xl border overflow-hidden mb-4"
+          style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
+          <div className="h-1.5 w-full" style={{ background: cfg.bg }} />
+          <div className="p-5 flex flex-col items-center text-center">
+            <div className="w-16 h-16 rounded-full flex items-center justify-center mb-3 text-2xl font-bold"
+              style={{ background: cfg.bg, color: cfg.color }}>
+              ✕
+            </div>
+            <h1 className="font-serif text-xl mb-1">{cfg.headline}</h1>
+            <p className="text-sm" style={{ color: 'rgba(28,15,8,0.5)' }}>{cfg.sub}</p>
+          </div>
+          <div className="grid grid-cols-2 border-t" style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
+            <div className="flex flex-col items-center py-3 border-r" style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
+              <span className="text-xs mb-0.5" style={{ color: 'rgba(28,15,8,0.35)' }}>Table</span>
+              <span className="text-sm font-medium">{table}</span>
+            </div>
+            <div className="flex flex-col items-center py-3">
+              <span className="text-xs mb-0.5" style={{ color: 'rgba(28,15,8,0.35)' }}>Ref</span>
+              <span className="text-sm font-medium">#{refOrder?.id.slice(-6).toUpperCase()}</span>
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={() => router.push(`/order?table=${table}`)}
+          className="w-full max-w-sm py-3 rounded-2xl text-white text-sm font-medium"
+          style={{ background: 'var(--espresso)' }}>
+          Start a new order
+        </button>
+      </div>
+    )
+  }
 
-  // Combined total across all orders
-  const combinedTotal = orders.reduce((sum, o) => sum + o.total, 0)
+  // Combine ALL items from ALL active table orders into one flat list
+  const allItems      = hasActiveOrders ? orders.flatMap((o) => o.items) : (latestOrder?.items ?? [])
+  const combinedTotal = hasActiveOrders ? orders.reduce((sum, o) => sum + o.total, 0) : (latestOrder?.total ?? 0)
 
   return (
     <div className="min-h-screen flex flex-col items-center px-5 py-8"
