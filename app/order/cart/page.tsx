@@ -1,6 +1,11 @@
 /**
  * FILE: app/order/cart/page.tsx
  * PURPOSE: Customer cart review page.
+ *
+ * CHANGES:
+ *   - Customer name / car number is now MANDATORY before placing an order.
+ *   - Added a Dine In / To My Car toggle so customers can specify delivery type.
+ *   - Car orders are prefixed with 🚗 in customer_name so staff can identify them instantly.
  */
 
 'use client'
@@ -19,15 +24,27 @@ function CartPageInner() {
 
   const { items, updateQuantity, removeItem, total, itemCount, customerName, setCustomerName } = useCartStore()
 
-  const [submitting, setSubmitting] = useState(false)
+  const [submitting, setSubmitting]     = useState(false)
+  const [deliveryType, setDeliveryType] = useState<'dine-in' | 'car'>('dine-in')
+  const [nameError, setNameError]       = useState(false)
 
   const placeOrder = async () => {
     if (items.length === 0 || submitting) return
+
+    const trimmed = customerName.trim()
+    if (!trimmed) {
+      setNameError(true)
+      return
+    }
+    setNameError(false)
     setSubmitting(true)
+
+    // Prefix car orders so staff can identify them on the dashboard
+    const displayName = deliveryType === 'car' ? `🚗 ${trimmed}` : trimmed
 
     const { data, error } = await supabase.from('orders').insert({
       table_number: table,
-      customer_name: customerName || null,
+      customer_name: displayName,
       items,
       total: total(),
       status: 'new',
@@ -62,6 +79,7 @@ function CartPageInner() {
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--cream)' }}>
 
+      {/* Header */}
       <div className="sticky top-0 z-10 bg-white border-b flex items-center gap-3 px-5 py-4"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <button onClick={() => router.push(`/order?table=${table}${addOn ? '&addOn=1' : ''}`)}
@@ -71,6 +89,8 @@ function CartPageInner() {
       </div>
 
       <div className="flex-1 p-5 space-y-3 pb-48">
+
+        {/* Cart items */}
         {items.map((cartItem, i) => {
           const itemPrice = resolveItemPrice(cartItem)
           return (
@@ -113,16 +133,67 @@ function CartPageInner() {
           )
         })}
 
-        <div className="bg-white rounded-2xl border p-4" style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
-          <p className="text-xs font-medium mb-2" style={{ color: 'rgba(28,15,8,0.45)' }}>
-            Your name (optional)
-          </p>
-          <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)}
-            placeholder="So we can call your order"
-            className="w-full text-sm outline-none" style={{ color: 'var(--espresso)' }} />
+        {/* Name / Car number — MANDATORY */}
+        <div
+          className="bg-white rounded-2xl border p-4 space-y-3"
+          style={{ borderColor: nameError ? '#EF4444' : 'rgba(28,15,8,0.08)' }}>
+
+          {/* Dine In / To My Car toggle */}
+          <div className="flex rounded-xl overflow-hidden border" style={{ borderColor: 'rgba(28,15,8,0.12)' }}>
+            <button
+              onClick={() => { setDeliveryType('dine-in'); setCustomerName(''); setNameError(false) }}
+              className="flex-1 py-2 text-xs font-medium transition-all"
+              style={{
+                background: deliveryType === 'dine-in' ? 'var(--espresso)' : '#fff',
+                color:      deliveryType === 'dine-in' ? '#fff' : 'rgba(28,15,8,0.5)',
+              }}>
+              🪑 Dine In
+            </button>
+            <button
+              onClick={() => { setDeliveryType('car'); setCustomerName(''); setNameError(false) }}
+              className="flex-1 py-2 text-xs font-medium transition-all"
+              style={{
+                background: deliveryType === 'car' ? 'var(--espresso)' : '#fff',
+                color:      deliveryType === 'car' ? '#fff' : 'rgba(28,15,8,0.5)',
+              }}>
+              🚗 To My Car
+            </button>
+          </div>
+
+          {/* Label */}
+          <div>
+            <p className="text-xs font-medium mb-1.5"
+              style={{ color: nameError ? '#EF4444' : 'rgba(28,15,8,0.45)' }}>
+              {deliveryType === 'dine-in' ? 'Your name' : 'Car number / description'}
+              <span style={{ color: '#EF4444' }}> *</span>
+            </p>
+            <input
+              type="text"
+              value={customerName}
+              onChange={(e) => {
+                setCustomerName(e.target.value)
+                if (e.target.value.trim()) setNameError(false)
+              }}
+              placeholder={
+                deliveryType === 'dine-in'
+                  ? 'e.g. Ahmed'
+                  : 'e.g. White Corolla · LEA-4821'
+              }
+              className="w-full text-sm outline-none"
+              style={{ color: 'var(--espresso)' }}
+            />
+            {nameError && (
+              <p className="text-xs mt-1.5" style={{ color: '#EF4444' }}>
+                {deliveryType === 'dine-in'
+                  ? 'Please enter your name to place the order.'
+                  : 'Please enter your car number so we can find you.'}
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
+      {/* Footer — totals + place order */}
       <div className="fixed bottom-0 left-0 right-0 p-5 bg-white border-t space-y-3"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <div className="flex justify-between text-sm">
