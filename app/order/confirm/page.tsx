@@ -1,9 +1,15 @@
 /**
  * FILE: app/order/confirm/page.tsx
  * PURPOSE: Live order-tracking screen shown to customers after placing an order.
- *          Fetches ALL active orders for the table (not just the latest one)
- *          and displays them combined — items from every order, one total.
+ *          Fetches ALL orders for the table (new, preparing, AND done) within a
+ *          4-hour window so the full combined order remains visible even after
+ *          staff marks everything as ready.
  * ROUTE: /order/confirm?table=1&orderId=<uuid>
+ *
+ * FIX: Previously only fetched 'new' and 'preparing' orders. When staff marked
+ *      all orders 'done', the orders array became empty and the page fell back
+ *      to showing only latestOrder (the single most-recent order). Now 'done'
+ *      is included in the query so all items remain visible throughout.
  */
 
 'use client'
@@ -14,8 +20,9 @@ import { useCartStore, resolveItemPrice } from '@/lib/cartStore'
 import { supabase, Order, OrderStatus } from '@/lib/supabase'
 import { formatPrice } from '@/lib/utils'
 
-const ORDER_DURATION_MS = 25 * 60 * 1000
-const POLL_INTERVAL_MS  = 5_000
+const ORDER_DURATION_MS  = 25 * 60 * 1000
+const POLL_INTERVAL_MS   = 5_000
+const SESSION_WINDOW_MS  = 4 * 60 * 60 * 1000   // only show orders from the last 4 hours
 
 function secondsLeft(createdAt: string): number {
   const elapsed = Date.now() - new Date(createdAt).getTime()
@@ -76,7 +83,8 @@ const STEPS: { icon: string; text: string; activeOn: OrderStatus[] }[] = [
 function dominantStatus(orders: Order[], fallback?: Order | null): OrderStatus {
   if (orders.some((o) => o.status === 'preparing')) return 'preparing'
   if (orders.some((o) => o.status === 'new'))        return 'new'
-  // No active orders left — use latestOrder's status (e.g. 'done') as fallback
+  if (orders.some((o) => o.status === 'done'))       return 'done'
+  // No recognisable orders — use the specific order's own status as fallback
   if (fallback) return fallback.status as OrderStatus
   return 'done'
 }
@@ -85,15 +93,15 @@ function ConfirmPageInner() {
   const searchParams = useSearchParams()
   const router       = useRouter()
   const table        = searchParams.get('table')   || '1'
-  const orderId      = searchParams.get('orderId') || ''  // the most-recent order, used for ref + timer
+  const orderId      = searchParams.get('orderId') || ''  // most-recent order — used for ref + timer
 
   const { clearCart } = useCartStore()
 
-  // All orders for this table (non-cancelled, active)
-  const [orders, setOrders]   = useState<Order[]>([])
+  // All orders for this table within the current session window
+  const [orders, setOrders]           = useState<Order[]>([])
   const [latestOrder, setLatestOrder] = useState<Order | null>(null)
-  const [tick, setTick]       = useState(0)
-  const [loading, setLoading] = useState(true)
+  const [tick, setTick]               = useState(0)
+  const [loading, setLoading]         = useState(true)
 
   useEffect(() => { clearCart() }, [clearCart])
 
@@ -101,19 +109,26 @@ function ConfirmPageInner() {
     if (!table) return
 
     const fetchOrders = async () => {
-      // Fetch ALL active orders for this table
+      // Cutoff: only include orders placed in the last 4 hours so we don't
+      // accidentally merge orders from a previous table session.
+      const cutoff = new Date(Date.now() - SESSION_WINDOW_MS).toISOString()
+
+      // FIX: include 'done' so the full combined order list stays visible
+      // after staff marks everything ready — not just 'new' / 'preparing'.
       const { data: tableOrders, error } = await supabase
         .from('orders')
         .select('*')
         .eq('table_number', table)
-        .in('status', ['new', 'preparing'])
+        .in('status', ['new', 'preparing', 'done'])
+        .gte('created_at', cutoff)
         .order('created_at', { ascending: true })
 
       if (!error && tableOrders) {
         setOrders(tableOrders as Order[])
       }
 
-      // Also fetch the specific order for the ref number / timer baseline
+      // Also fetch the specific order placed in this session for the ref
+      // number and countdown timer baseline.
       if (orderId) {
         const { data: single } = await supabase
           .from('orders')
@@ -131,6 +146,7 @@ function ConfirmPageInner() {
     return () => clearInterval(poll)
   }, [table, orderId])
 
+  // 1-second tick for the countdown display
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 1000)
     return () => clearInterval(t)
@@ -158,16 +174,14 @@ function ConfirmPageInner() {
     )
   }
 
-  // When there are no active (new/preparing) orders, fall back to latestOrder alone
-  const hasActiveOrders = orders.length > 0
-  const refOrder        = latestOrder ?? orders[orders.length - 1]
-  const status          = dominantStatus(orders, latestOrder)
-  const cfg             = STATUS_CONFIG[status]
-  const isDone          = status === 'done'
-  const isCancelled     = status === 'cancelled'
-  const secs            = refOrder ? secondsLeft(refOrder.created_at) : 0
+  const refOrder    = latestOrder ?? orders[orders.length - 1]
+  const status      = dominantStatus(orders, latestOrder)
+  const cfg         = STATUS_CONFIG[status]
+  const isDone      = status === 'done'
+  const isCancelled = status === 'cancelled'
+  const secs        = refOrder ? secondsLeft(refOrder.created_at) : 0
 
-  // If this specific order was cancelled, show a clean cancelled screen
+  // ── Cancelled screen ────────────────────────────────────────────────────────
   if (isCancelled) {
     return (
       <div className="min-h-screen flex flex-col items-center px-5 py-8"
@@ -204,10 +218,21 @@ function ConfirmPageInner() {
     )
   }
 
-  // Combine ALL items from ALL active table orders into one flat list
-  const allItems      = hasActiveOrders ? orders.flatMap((o) => o.items) : (latestOrder?.items ?? [])
-  const combinedTotal = hasActiveOrders ? orders.reduce((sum, o) => sum + o.total, 0) : (latestOrder?.total ?? 0)
+  // ── Combine ALL orders for this table into one item list + total ─────────────
+  // This now works correctly even when status is 'done' because the query
+  // above includes done orders in the `orders` array.
+  const allItems      = orders.length > 0
+    ? orders.flatMap((o) => o.items)
+    : (latestOrder?.items ?? [])
 
+  const combinedTotal = orders.length > 0
+    ? orders.reduce((sum, o) => sum + o.total, 0)
+    : (latestOrder?.total ?? 0)
+
+  // Whether any order is still in-flight (i.e. customer can add more items)
+  const hasActiveOrders = orders.some((o) => o.status === 'new' || o.status === 'preparing')
+
+  // ── Main tracking screen ────────────────────────────────────────────────────
   return (
     <div className="min-h-screen flex flex-col items-center px-5 py-8"
       style={{ background: 'var(--cream)' }}>
@@ -267,7 +292,7 @@ function ConfirmPageInner() {
                 </div>
                 <span className="text-sm transition-all"
                   style={{
-                    color: active ? 'var(--espresso)' : 'rgba(28,15,8,0.3)',
+                    color:      active ? 'var(--espresso)' : 'rgba(28,15,8,0.3)',
                     fontWeight: active ? 500 : 400,
                   }}>
                   {step.text}
@@ -327,15 +352,15 @@ function ConfirmPageInner() {
         </div>
       </div>
 
-      {/* Add more items button — only when order is still active */}
-      {(status === 'new' || status === 'preparing') && (
+      {/* Add more items — only visible while at least one order is still active */}
+      {hasActiveOrders && (
         <button
           onClick={() => router.push(`/order?table=${table}&addOn=1`)}
           className="w-full max-w-sm py-3 rounded-2xl border text-sm font-medium mb-4"
           style={{
             borderColor: 'rgba(28,15,8,0.15)',
-            color: 'var(--espresso)',
-            background: '#fff',
+            color:       'var(--espresso)',
+            background:  '#fff',
           }}>
           + Add more items
         </button>
