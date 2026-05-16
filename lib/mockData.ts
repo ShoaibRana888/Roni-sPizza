@@ -148,6 +148,7 @@ export const MOCK_MENU: MenuItem[] = [
     id: 'ex-1', name: 'Extra Protein', emoji: '➕', price: 245,
     description: 'Add extra protein: Tikka Chunks, Beef Sausages, Minced Beef, or Pepperoni',
     category: 'Extras', available: true,
+    show_after_pizza: true,
     customizations: [
       { label: 'Protein', options: ['Tikka Chunks', 'Beef Sausages', 'Minced Beef', 'Pepperoni'], required: true },
     ],

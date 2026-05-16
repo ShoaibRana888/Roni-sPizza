@@ -42,6 +42,7 @@ export interface MenuItem {
   image_url?: string
   available: boolean
   customizations?: Customization[]
+  show_after_pizza?: boolean 
   created_at: string
 }
 

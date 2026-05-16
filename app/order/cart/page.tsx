@@ -6,12 +6,14 @@
  *   - Customer name / car number is now MANDATORY before placing an order.
  *   - Added a Dine In / To My Car toggle so customers can specify delivery type.
  *   - Car orders are prefixed with 🚗 in customer_name so staff can identify them instantly.
+ *   - In addOn mode, customer name is fetched from the existing table order and
+ *     pre-filled (read-only). The delivery type toggle is hidden since it's already known.
  */
 
 'use client'
 
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useState, Suspense } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useCartStore, resolveItemPrice } from '@/lib/cartStore'
 import { formatPrice } from '@/lib/utils'
 import { supabase } from '../../../lib/supabase'
@@ -27,6 +29,33 @@ function CartPageInner() {
   const [submitting, setSubmitting]     = useState(false)
   const [deliveryType, setDeliveryType] = useState<'dine-in' | 'car'>('dine-in')
   const [nameError, setNameError]       = useState(false)
+
+  // In addOn mode: fetch the existing order for this table and pre-fill the name
+  useEffect(() => {
+    if (!addOn) return
+
+    supabase
+      .from('orders')
+      .select('customer_name')
+      .eq('table_number', table)
+      .in('status', ['new', 'preparing', 'done'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!data?.customer_name) return
+        const raw = data.customer_name as string
+
+        // Detect car orders by the 🚗 prefix written at order time
+        if (raw.startsWith('🚗 ')) {
+          setDeliveryType('car')
+          setCustomerName(raw.slice('🚗 '.length))
+        } else {
+          setDeliveryType('dine-in')
+          setCustomerName(raw)
+        }
+      })
+  }, [addOn, table, setCustomerName])
 
   const placeOrder = async () => {
     if (items.length === 0 || submitting) return
@@ -133,63 +162,63 @@ function CartPageInner() {
           )
         })}
 
-        {/* Name / Car number — MANDATORY */}
+        {/* Name / Car number */}
         <div
           className="bg-white rounded-2xl border p-4 space-y-3"
-          style={{ borderColor: nameError ? '#EF4444' : 'rgba(28,15,8,0.08)' }}>
+          style={{ borderColor: nameError ? '#EF4444' : 'rgba(28,15,8,0.08)' }}
+        >
+          {/* Dine-in / Car toggle — hidden in addOn mode since it's already known */}
+          {!addOn && (
+            <div className="flex gap-2">
+              {(['dine-in', 'car'] as const).map((type) => (
+                <button
+                  key={type}
+                  onClick={() => setDeliveryType(type)}
+                  className="flex-1 py-2 rounded-xl text-xs font-medium border transition-all"
+                  style={{
+                    background:  deliveryType === type ? 'var(--espresso)' : '#fff',
+                    color:       deliveryType === type ? '#fff' : 'rgba(28,15,8,0.5)',
+                    borderColor: deliveryType === type ? 'var(--espresso)' : 'rgba(28,15,8,0.12)',
+                  }}
+                >
+                  {type === 'dine-in' ? '🍽 Dine In' : '🚗 To My Car'}
+                </button>
+              ))}
+            </div>
+          )}
 
-          {/* Dine In / To My Car toggle */}
-          <div className="flex rounded-xl overflow-hidden border" style={{ borderColor: 'rgba(28,15,8,0.12)' }}>
-            <button
-              onClick={() => { setDeliveryType('dine-in'); setCustomerName(''); setNameError(false) }}
-              className="flex-1 py-2 text-xs font-medium transition-all"
-              style={{
-                background: deliveryType === 'dine-in' ? 'var(--espresso)' : '#fff',
-                color:      deliveryType === 'dine-in' ? '#fff' : 'rgba(28,15,8,0.5)',
-              }}>
-              🪑 Dine In
-            </button>
-            <button
-              onClick={() => { setDeliveryType('car'); setCustomerName(''); setNameError(false) }}
-              className="flex-1 py-2 text-xs font-medium transition-all"
-              style={{
-                background: deliveryType === 'car' ? 'var(--espresso)' : '#fff',
-                color:      deliveryType === 'car' ? '#fff' : 'rgba(28,15,8,0.5)',
-              }}>
-              🚗 To My Car
-            </button>
-          </div>
-
-          {/* Label */}
           <div>
-            <p className="text-xs font-medium mb-1.5"
-              style={{ color: nameError ? '#EF4444' : 'rgba(28,15,8,0.45)' }}>
-              {deliveryType === 'dine-in' ? 'Your name' : 'Car number / description'}
-              <span style={{ color: '#EF4444' }}> *</span>
-            </p>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: 'rgba(28,15,8,0.5)' }}>
+              {deliveryType === 'car' ? 'Car number' : 'Your name'}
+              {addOn && (
+                <span className="ml-2 font-normal" style={{ color: 'rgba(28,15,8,0.35)' }}>
+                  · from your previous order
+                </span>
+              )}
+            </label>
             <input
               type="text"
               value={customerName}
-              onChange={(e) => {
-                setCustomerName(e.target.value)
-                if (e.target.value.trim()) setNameError(false)
+              onChange={(e) => { if (!addOn) setCustomerName(e.target.value) }}
+              readOnly={addOn}
+              placeholder={deliveryType === 'car' ? 'e.g. ABC-123' : 'e.g. Ali'}
+              className="w-full text-sm border rounded-xl px-3 py-2.5 outline-none transition-all"
+              style={{
+                borderColor: nameError ? '#EF4444' : 'rgba(28,15,8,0.15)',
+                background:  addOn ? 'rgba(28,15,8,0.03)' : '#fff',
+                color:       addOn ? 'rgba(28,15,8,0.45)' : 'var(--espresso)',
+                cursor:      addOn ? 'default' : 'text',
               }}
-              placeholder={
-                deliveryType === 'dine-in'
-                  ? 'e.g. Ahmed'
-                  : 'e.g. White Corolla · LEA-4821'
-              }
-              className="w-full text-sm outline-none"
-              style={{ color: 'var(--espresso)' }}
             />
-            {nameError && (
-              <p className="text-xs mt-1.5" style={{ color: '#EF4444' }}>
-                {deliveryType === 'dine-in'
-                  ? 'Please enter your name to place the order.'
-                  : 'Please enter your car number so we can find you.'}
-              </p>
-            )}
           </div>
+
+          {nameError && (
+            <p className="text-xs" style={{ color: '#EF4444' }}>
+              {deliveryType === 'car'
+                ? 'Please enter your car number to place the order.'
+                : 'Please enter your name to place the order.'}
+            </p>
+          )}
         </div>
       </div>
 

@@ -7,6 +7,7 @@
  *          - Category filter strip + item grid
  *          - Item modal with quantity stepper + customization options
  *          - Floating cart bar
+ *          - Extra Protein upsell nudge shown after a pizza is added
  *
  * CATEGORY ORDER: Pizzas first, Drinks and Extras last.
  *   Classic Pizzas → Roni's Specials → Protein Specials → Drinks → Extras
@@ -34,6 +35,9 @@ const CATEGORY_ORDER = [
   'Extras',
 ]
 
+// Categories that trigger the Extra Protein upsell
+const PIZZA_CATEGORIES = ['Classic Pizzas', "Roni's Specials", 'Protein Specials']
+
 function sortCategories(cats: string[]): string[] {
   return [...cats].sort((a, b) => {
     const ia = CATEGORY_ORDER.indexOf(a)
@@ -57,6 +61,7 @@ function OrderPageInner() {
   const [tableBlocked, setBlocked]    = useState(false)
   const [validTables, setValidTables] = useState<string[]>([])
   const [tablesLoaded, setTablesLoaded] = useState(false)
+  const [upsellProtein, setUpsellProtein] = useState<MenuItem | null>(null)
 
   const { addItem, itemCount, setTableNumber } = useCartStore()
 
@@ -150,9 +155,15 @@ function OrderPageInner() {
     return a.name.localeCompare(b.name)
   })
 
-  const visible   = activeCategory === 'All'
+  // Extra Protein item — hidden from the grid, shown as upsell after pizza is added
+  const extraProteinItem = menu.find((i) => i.show_after_pizza)
+
+  // Filter show_after_pizza items out of the main grid entirely
+  const visible = (activeCategory === 'All'
     ? sortedMenu
     : sortedMenu.filter((i) => i.category === activeCategory)
+  ).filter((i) => !i.show_after_pizza)
+
   const cartCount = itemCount()
 
   return (
@@ -215,6 +226,18 @@ function OrderPageInner() {
         ))}
       </div>
 
+      {/* Extra Protein upsell nudge — appears after a pizza is added to cart */}
+      {upsellProtein && !selectedItem && (
+        <UpsellNudge
+          item={upsellProtein}
+          onAccept={() => {
+            setSelected(upsellProtein)
+            setUpsellProtein(null)
+          }}
+          onDismiss={() => setUpsellProtein(null)}
+        />
+      )}
+
       {cartCount > 0 && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-20">
           <button
@@ -237,12 +260,65 @@ function OrderPageInner() {
           onAdd={(options, qty) => {
             addItem(selectedItem, options, undefined, qty)
             setSelected(null)
+            // Trigger Extra Protein upsell when a pizza is added
+            if (PIZZA_CATEGORIES.includes(selectedItem.category) && extraProteinItem) {
+              setUpsellProtein(extraProteinItem)
+            }
           }}
         />
       )}
     </div>
   )
 }
+
+// ─── UpsellNudge ─────────────────────────────────────────────────────────────
+
+function UpsellNudge({
+  item,
+  onAccept,
+  onDismiss,
+}: {
+  item: MenuItem
+  onAccept: () => void
+  onDismiss: () => void
+}) {
+  return (
+    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-20 w-full max-w-sm px-4 animate-fade-up">
+      <div
+        className="flex items-center gap-3 rounded-2xl px-4 py-3 shadow-xl"
+        style={{
+          background: 'var(--espresso)',
+          color: '#fff',
+          border: '1px solid rgba(255,255,255,0.08)',
+        }}
+      >
+        <span className="text-2xl">➕</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold leading-tight">Boost your pizza?</p>
+          <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.5)' }}>
+            Add extra protein — {formatPrice(item.price)}
+          </p>
+        </div>
+        <button
+          onClick={onAccept}
+          className="flex-shrink-0 text-xs font-semibold px-3 py-1.5 rounded-xl transition-all"
+          style={{ background: 'var(--latte)', color: '#fff' }}
+        >
+          Add
+        </button>
+        <button
+          onClick={onDismiss}
+          className="flex-shrink-0 text-xs px-2 py-1.5 rounded-xl"
+          style={{ color: 'rgba(255,255,255,0.35)' }}
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── ItemModal ────────────────────────────────────────────────────────────────
 
 function ItemModal({
   item,
