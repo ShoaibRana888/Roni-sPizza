@@ -18,6 +18,8 @@ import { supabase } from '@/lib/supabase'
 const NAV = [
   { href: '/dashboard',          label: 'Dashboard', icon: '◈' },
   { href: '/dashboard/orders',   label: 'Orders',    icon: '◎' },
+  { href: '/dashboard/kitchen',  label: 'Kitchen',   icon: '🍳' },
+  { href: '/dashboard/invoice',  label: 'Invoice',   icon: '🧾' },
   { href: '/dashboard/history',  label: 'History',   icon: '◷' },
   { href: '/dashboard/menu',     label: 'Menu',      icon: '⊞' },
   { href: '/dashboard/qr',       label: 'QR Codes',  icon: '▣' },
