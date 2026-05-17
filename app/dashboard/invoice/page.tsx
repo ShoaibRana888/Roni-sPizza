@@ -56,6 +56,7 @@ export default function InvoicePage() {
     const { data, error } = await supabase
       .from('orders')
       .select('*')
+      .not('status', 'eq', 'cancelled')
       .order('created_at', { ascending: false })
       .limit(50)
 
