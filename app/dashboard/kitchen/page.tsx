@@ -58,7 +58,7 @@ export default function KitchenPage() {
 
     const channel = supabase
       .channel('kitchen-orders')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
+      .on('postgres_changes', { event: '*', schema: 'cafe_orders', table: 'orders' }, (payload) => {
         const id = (payload.new as Order)?.id || (payload.old as Order)?.id
         if (id && pendingRef.current.has(id)) { pendingRef.current.delete(id); return }
 

@@ -1,13 +1,12 @@
 /**
  * FILE: app/order/cart/page.tsx
- * PURPOSE: Customer cart review page.
  *
  * CHANGES:
- *   - Customer name / car number is now MANDATORY before placing an order.
- *   - Added a Dine In / To My Car toggle so customers can specify delivery type.
- *   - Car orders are prefixed with 🚗 in customer_name so staff can identify them instantly.
- *   - In addOn mode, customer name is fetched from the existing table order and
- *     pre-filled (read-only). The delivery type toggle is hidden since it's already known.
+ *   - Reads `mode=delivery` param
+ *   - Delivery mode: shows a delivery address text field instead of dine-in/car toggle
+ *   - Delivery address stored in order as `delivery_address` column
+ *   - order_type set to 'delivery' | 'dine-in' | 'car' accordingly
+ *   - In addOn mode: name pre-filled from existing order (unchanged)
  */
 
 'use client'
@@ -19,21 +18,24 @@ import { formatPrice } from '@/lib/utils'
 import { supabase } from '../../../lib/supabase'
 
 function CartPageInner() {
-  const router = useRouter()
+  const router       = useRouter()
   const searchParams = useSearchParams()
-  const table = searchParams.get('table') || '1'
-  const addOn = searchParams.get('addOn') === '1'
+  const table        = searchParams.get('table') || '1'
+  const addOn        = searchParams.get('addOn') === '1'
+  const mode         = searchParams.get('mode') || 'dine-in'
+  const isDelivery   = mode === 'delivery'
 
   const { items, updateQuantity, removeItem, total, itemCount, customerName, setCustomerName } = useCartStore()
 
-  const [submitting, setSubmitting]     = useState(false)
-  const [deliveryType, setDeliveryType] = useState<'dine-in' | 'car'>('dine-in')
-  const [nameError, setNameError]       = useState(false)
+  const [submitting, setSubmitting]         = useState(false)
+  const [deliveryType, setDeliveryType]     = useState<'dine-in' | 'car'>('dine-in')
+  const [deliveryAddress, setDeliveryAddress] = useState('')
+  const [nameError, setNameError]           = useState(false)
+  const [addressError, setAddressError]     = useState(false)
 
-  // In addOn mode: fetch the existing order for this table and pre-fill the name
+  // addOn mode: pre-fill name from existing order
   useEffect(() => {
     if (!addOn) return
-
     supabase
       .from('orders')
       .select('customer_name')
@@ -45,13 +47,10 @@ function CartPageInner() {
       .then(({ data }) => {
         if (!data?.customer_name) return
         const raw = data.customer_name as string
-
-        // Detect car orders by the 🚗 prefix written at order time
         if (raw.startsWith('🚗 ')) {
           setDeliveryType('car')
           setCustomerName(raw.slice('🚗 '.length))
         } else {
-          setDeliveryType('dine-in')
           setCustomerName(raw)
         }
       })
@@ -60,24 +59,49 @@ function CartPageInner() {
   const placeOrder = async () => {
     if (items.length === 0 || submitting) return
 
-    const trimmed = customerName.trim()
-    if (!trimmed) {
-      setNameError(true)
-      return
-    }
-    setNameError(false)
+    const trimmedName = customerName.trim()
+    const trimmedAddr = deliveryAddress.trim()
+
+    let hasError = false
+    if (!trimmedName) { setNameError(true); hasError = true }
+    else setNameError(false)
+
+    if (isDelivery && !trimmedAddr) { setAddressError(true); hasError = true }
+    else setAddressError(false)
+
+    if (hasError) return
     setSubmitting(true)
 
-    // Prefix car orders so staff can identify them on the dashboard
-    const displayName = deliveryType === 'car' ? `🚗 ${trimmed}` : trimmed
+    // Determine display name and order type
+    let displayName = trimmedName
+    let orderType   = 'dine-in'
 
-    const { data, error } = await supabase.from('orders').insert({
-      table_number: table,
+    if (isDelivery) {
+      displayName = `🛵 ${trimmedName}`
+      orderType   = 'delivery'
+    } else if (deliveryType === 'car') {
+      displayName = `🚗 ${trimmedName}`
+      orderType   = 'car'
+    }
+
+    const orderPayload: Record<string, unknown> = {
+      table_number:  isDelivery ? 'delivery' : table,
       customer_name: displayName,
       items,
-      total: total(),
-      status: 'new',
-    }).select().single()
+      total:         total(),
+      status:        'new',
+      order_type:    orderType,
+    }
+
+    if (isDelivery) {
+      orderPayload.delivery_address = trimmedAddr
+    }
+
+    const { data, error } = await supabase
+      .from('orders')
+      .insert(orderPayload)
+      .select()
+      .single()
 
     if (error) {
       console.error('Order failed:', error)
@@ -86,8 +110,10 @@ function CartPageInner() {
     }
 
     sessionStorage.setItem(`ronis_table_${table}_order_time`, String(Date.now()))
-    router.push(`/order/confirm?table=${table}&orderId=${data.id}`)
+    router.push(`/order/confirm?table=${isDelivery ? 'delivery' : table}&orderId=${data.id}`)
   }
+
+  const backUrl = `/order?table=${table}${addOn ? '&addOn=1' : ''}${isDelivery ? '&mode=delivery' : ''}`
 
   if (items.length === 0) {
     return (
@@ -96,7 +122,7 @@ function CartPageInner() {
         <span className="text-5xl mb-4">🛒</span>
         <p className="font-serif text-xl mb-2">Your cart is empty</p>
         <p className="text-sm mb-6" style={{ color: 'rgba(28,15,8,0.45)' }}>Add something from the menu</p>
-        <button onClick={() => router.push(`/order?table=${table}${addOn ? '&addOn=1' : ''}`)}
+        <button onClick={() => router.push(backUrl)}
           className="px-6 py-3 rounded-xl text-white text-sm font-medium"
           style={{ background: 'var(--espresso)' }}>
           Back to menu
@@ -111,10 +137,14 @@ function CartPageInner() {
       {/* Header */}
       <div className="sticky top-0 z-10 bg-white border-b flex items-center gap-3 px-5 py-4"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
-        <button onClick={() => router.push(`/order?table=${table}${addOn ? '&addOn=1' : ''}`)}
+        <button onClick={() => router.push(backUrl)}
           className="text-xl" style={{ color: 'rgba(28,15,8,0.45)' }}>←</button>
-        <h1 className="font-serif text-xl">{addOn ? 'Add more items' : 'Your cart'}</h1>
-        <span className="ml-auto text-xs" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {table}</span>
+        <h1 className="font-serif text-xl">
+          {addOn ? 'Add more items' : isDelivery ? 'Delivery order' : 'Your cart'}
+        </h1>
+        <span className="ml-auto text-xs" style={{ color: 'rgba(28,15,8,0.4)' }}>
+          {isDelivery ? '🛵 Delivery' : `Table ${table}`}
+        </span>
       </div>
 
       <div className="flex-1 p-5 space-y-3 pb-48">
@@ -142,19 +172,15 @@ function CartPageInner() {
                   {formatPrice(itemPrice * cartItem.quantity)}
                 </p>
               </div>
-
               <div className="flex flex-col items-end gap-2">
-                <button
-                  onClick={() => removeItem(cartItem.menuItem.id, cartItem.selectedOptions)}
+                <button onClick={() => removeItem(cartItem.menuItem.id, cartItem.selectedOptions)}
                   className="text-xs" style={{ color: 'rgba(28,15,8,0.3)' }}>✕</button>
                 <div className="flex items-center gap-2 border rounded-lg px-2 py-1"
                   style={{ borderColor: 'rgba(28,15,8,0.12)' }}>
-                  <button
-                    onClick={() => updateQuantity(cartItem.menuItem.id, cartItem.quantity - 1, cartItem.selectedOptions)}
+                  <button onClick={() => updateQuantity(cartItem.menuItem.id, cartItem.quantity - 1, cartItem.selectedOptions)}
                     className="text-base w-5 text-center">−</button>
                   <span className="text-sm font-medium w-4 text-center">{cartItem.quantity}</span>
-                  <button
-                    onClick={() => updateQuantity(cartItem.menuItem.id, cartItem.quantity + 1, cartItem.selectedOptions)}
+                  <button onClick={() => updateQuantity(cartItem.menuItem.id, cartItem.quantity + 1, cartItem.selectedOptions)}
                     className="text-base w-5 text-center">+</button>
                 </div>
               </div>
@@ -162,67 +188,117 @@ function CartPageInner() {
           )
         })}
 
-        {/* Name / Car number */}
-        <div
-          className="bg-white rounded-2xl border p-4 space-y-3"
-          style={{ borderColor: nameError ? '#EF4444' : 'rgba(28,15,8,0.08)' }}
-        >
-          {/* Dine-in / Car toggle — hidden in addOn mode since it's already known */}
-          {!addOn && (
-            <div className="flex gap-2">
-              {(['dine-in', 'car'] as const).map((type) => (
-                <button
-                  key={type}
-                  onClick={() => setDeliveryType(type)}
-                  className="flex-1 py-2 rounded-xl text-xs font-medium border transition-all"
-                  style={{
-                    background:  deliveryType === type ? 'var(--espresso)' : '#fff',
-                    color:       deliveryType === type ? '#fff' : 'rgba(28,15,8,0.5)',
-                    borderColor: deliveryType === type ? 'var(--espresso)' : 'rgba(28,15,8,0.12)',
-                  }}
-                >
-                  {type === 'dine-in' ? '🍽 Dine In' : '🚗 To My Car'}
-                </button>
-              ))}
+        {/* ── DELIVERY: address + name ────────────────────────────────────── */}
+        {isDelivery && (
+          <div className="bg-white rounded-2xl border p-4 space-y-3"
+            style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
+
+            <div className="flex items-center gap-2 pb-2 border-b"
+              style={{ borderColor: 'rgba(28,15,8,0.06)' }}>
+              <span>🛵</span>
+              <p className="text-sm font-medium">Delivery details</p>
             </div>
-          )}
 
-          <div>
-            <label className="text-xs font-medium block mb-1.5" style={{ color: 'rgba(28,15,8,0.5)' }}>
-              {deliveryType === 'car' ? 'Car number' : 'Your name'}
-              {addOn && (
-                <span className="ml-2 font-normal" style={{ color: 'rgba(28,15,8,0.35)' }}>
-                  · from your previous order
-                </span>
+            {/* Name */}
+            <div>
+              <label className="text-xs font-medium block mb-1.5"
+                style={{ color: 'rgba(28,15,8,0.5)' }}>Your name *</label>
+              <input
+                type="text"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                placeholder="e.g. Ali"
+                className="w-full text-sm border rounded-xl px-3 py-2.5 outline-none"
+                style={{ borderColor: nameError ? '#EF4444' : 'rgba(28,15,8,0.15)' }}
+              />
+              {nameError && (
+                <p className="text-xs mt-1" style={{ color: '#EF4444' }}>
+                  Please enter your name.
+                </p>
               )}
-            </label>
-            <input
-              type="text"
-              value={customerName}
-              onChange={(e) => { if (!addOn) setCustomerName(e.target.value) }}
-              readOnly={addOn}
-              placeholder={deliveryType === 'car' ? 'e.g. ABC-123' : 'e.g. Ali'}
-              className="w-full text-sm border rounded-xl px-3 py-2.5 outline-none transition-all"
-              style={{
-                borderColor: nameError ? '#EF4444' : 'rgba(28,15,8,0.15)',
-                background:  addOn ? 'rgba(28,15,8,0.03)' : '#fff',
-                color:       addOn ? 'rgba(28,15,8,0.45)' : 'var(--espresso)',
-                cursor:      addOn ? 'default' : 'text',
-              }}
-            />
-          </div>
+            </div>
 
-          {nameError && (
-            <p className="text-xs" style={{ color: '#EF4444' }}>
-              {deliveryType === 'car'
-                ? 'Please enter your car number to place the order.'
-                : 'Please enter your name to place the order.'}
-            </p>
-          )}
-        </div>
+            {/* Delivery address */}
+            <div>
+              <label className="text-xs font-medium block mb-1.5"
+                style={{ color: 'rgba(28,15,8,0.5)' }}>Delivery address *</label>
+              <textarea
+                value={deliveryAddress}
+                onChange={(e) => setDeliveryAddress(e.target.value)}
+                placeholder="House / Flat number, Street, Area"
+                rows={2}
+                className="w-full text-sm border rounded-xl px-3 py-2.5 outline-none resize-none"
+                style={{ borderColor: addressError ? '#EF4444' : 'rgba(28,15,8,0.15)' }}
+              />
+              {addressError && (
+                <p className="text-xs mt-1" style={{ color: '#EF4444' }}>
+                  Please enter a delivery address.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── DINE-IN / CAR: name + type ──────────────────────────────────── */}
+        {!isDelivery && (
+          <div className="bg-white rounded-2xl border p-4 space-y-3"
+            style={{ borderColor: nameError ? '#EF4444' : 'rgba(28,15,8,0.08)' }}>
+
+            {/* Dine In / Car toggle — hidden in addOn */}
+            {!addOn && (
+              <div className="flex gap-2">
+                {(['dine-in', 'car'] as const).map((type) => (
+                  <button key={type} onClick={() => setDeliveryType(type)}
+                    className="flex-1 py-2 rounded-xl text-xs font-medium border transition-all"
+                    style={{
+                      background:  deliveryType === type ? 'var(--espresso)' : '#fff',
+                      color:       deliveryType === type ? '#fff' : 'rgba(28,15,8,0.5)',
+                      borderColor: deliveryType === type ? 'var(--espresso)' : 'rgba(28,15,8,0.12)',
+                    }}>
+                    {type === 'dine-in' ? '🍽 Dine In' : '🚗 To My Car'}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div>
+              <label className="text-xs font-medium block mb-1.5"
+                style={{ color: 'rgba(28,15,8,0.5)' }}>
+                {deliveryType === 'car' ? 'Car number' : 'Your name'}
+                {addOn && (
+                  <span className="ml-2 font-normal" style={{ color: 'rgba(28,15,8,0.35)' }}>
+                    · from your previous order
+                  </span>
+                )}
+              </label>
+              <input
+                type="text"
+                value={customerName}
+                onChange={(e) => { if (!addOn) setCustomerName(e.target.value) }}
+                readOnly={addOn}
+                placeholder={deliveryType === 'car' ? 'e.g. ABC-123' : 'e.g. Ali'}
+                className="w-full text-sm border rounded-xl px-3 py-2.5 outline-none transition-all"
+                style={{
+                  borderColor: nameError ? '#EF4444' : 'rgba(28,15,8,0.15)',
+                  background:  addOn ? 'rgba(28,15,8,0.03)' : '#fff',
+                  color:       addOn ? 'rgba(28,15,8,0.45)' : 'var(--espresso)',
+                  cursor:      addOn ? 'default' : 'text',
+                }}
+              />
+            </div>
+
+            {nameError && (
+              <p className="text-xs" style={{ color: '#EF4444' }}>
+                {deliveryType === 'car'
+                  ? 'Please enter your car number.'
+                  : 'Please enter your name.'}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Footer — totals + place order */}
+      {/* Footer */}
       <div className="fixed bottom-0 left-0 right-0 p-5 bg-white border-t space-y-3"
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <div className="flex justify-between text-sm">
@@ -232,18 +308,20 @@ function CartPageInner() {
           <span className="font-medium">{formatPrice(total())}</span>
         </div>
 
-        <button
-          onClick={placeOrder}
-          disabled={submitting}
+        <button onClick={placeOrder} disabled={submitting}
           className="w-full py-4 rounded-2xl text-white font-medium text-sm transition-all"
           style={{ background: submitting ? 'rgba(28,15,8,0.3)' : 'var(--espresso)' }}>
           {submitting
-            ? (addOn ? 'Adding items…' : 'Placing order…')
-            : (addOn ? `Add to order · ${formatPrice(total())}` : `Place order · ${formatPrice(total())}`)}
+            ? (addOn ? 'Adding items…' : isDelivery ? 'Placing delivery order…' : 'Placing order…')
+            : (addOn ? `Add to order · ${formatPrice(total())}`
+               : isDelivery ? `Place delivery order · ${formatPrice(total())}`
+               : `Place order · ${formatPrice(total())}`)}
         </button>
 
         <p className="text-center text-xs" style={{ color: 'rgba(28,15,8,0.3)' }}>
-          Pay at the counter when your order is ready
+          {isDelivery
+            ? 'Pay on delivery'
+            : 'Pay at the counter when your order is ready'}
         </p>
       </div>
     </div>

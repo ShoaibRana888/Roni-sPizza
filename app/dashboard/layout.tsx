@@ -1,9 +1,8 @@
 /**
  * FILE: app/dashboard/layout.tsx
- * PURPOSE: Shared layout for all dashboard pages (staff only).
- *
- * MOBILE  (<768px): Slim top bar (logo + sign out only, NO subtitle) + bottom tab bar.
- * DESKTOP (≥768px): Left sidebar, unchanged.
+ * MOBILE  (<768px): Slim top bar + bottom tab bar.
+ * DESKTOP (≥768px): Left sidebar.
+ * CHANGE: Added Delivery (🛵) to NAV between Invoice and History.
  */
 
 'use client'
@@ -14,13 +13,14 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 
 const NAV = [
-  { href: '/dashboard',         label: 'Dashboard', icon: '◈',  mobileIcon: '⊟'  },
-  { href: '/dashboard/orders',  label: 'Orders',    icon: '◎',  mobileIcon: '◎'  },
-  { href: '/dashboard/kitchen', label: 'Kitchen',   icon: '🍳', mobileIcon: '🍳' },
-  { href: '/dashboard/invoice', label: 'Invoice',   icon: '🧾', mobileIcon: '🧾' },
-  { href: '/dashboard/history', label: 'History',   icon: '◷',  mobileIcon: '◷'  },
-  { href: '/dashboard/menu',    label: 'Menu',      icon: '⊞',  mobileIcon: '⊞'  },
-  { href: '/dashboard/qr',      label: 'QR',        icon: '▣',  mobileIcon: '▣'  },
+  { href: '/dashboard',          label: 'Dashboard', icon: '◈',  mobileIcon: '⊟'  },
+  { href: '/dashboard/orders',   label: 'Orders',    icon: '◎',  mobileIcon: '◎'  },
+  { href: '/dashboard/kitchen',  label: 'Kitchen',   icon: '🍳', mobileIcon: '🍳' },
+  { href: '/dashboard/invoice',  label: 'Invoice',   icon: '🧾', mobileIcon: '🧾' },
+  { href: '/dashboard/delivery', label: 'Delivery',  icon: '🛵', mobileIcon: '🛵' },
+  { href: '/dashboard/history',  label: 'History',   icon: '◷',  mobileIcon: '◷'  },
+  { href: '/dashboard/menu',     label: 'Menu',      icon: '⊞',  mobileIcon: '⊞'  },
+  { href: '/dashboard/qr',       label: 'QR',        icon: '▣',  mobileIcon: '▣'  },
 ]
 
 const STORAGE_KEY = 'ronis_table_count'
@@ -95,7 +95,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {/* ── MAIN CONTENT ────────────────────────────────────────────────────── */}
       <main className="flex-1 flex flex-col overflow-hidden" style={{ background: 'var(--cream)' }}>
 
-        {/* Mobile top bar — logo only, NO subtitle text */}
+        {/* Mobile top bar — logo only */}
         <div
           className="md:hidden flex items-center justify-between px-4 flex-shrink-0"
           style={{ background: 'var(--espresso)', height: 44 }}
@@ -108,7 +108,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </button>
         </div>
 
-        {/* Page — bottom padding on mobile so tab bar doesn't overlap */}
+        {/* Page — bottom padding on mobile for tab bar */}
         <div className="flex-1 flex flex-col overflow-hidden pb-14 md:pb-0">
           {children}
         </div>
@@ -130,7 +130,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               className="relative flex-1 flex flex-col items-center justify-center gap-0.5"
               style={{ color: active ? 'var(--latte)' : 'rgba(255,255,255,0.35)' }}
             >
-              {/* Active top pip */}
               {active && (
                 <span className="absolute top-0 left-1/2 -translate-x-1/2 rounded-full"
                   style={{ width: 20, height: 2, background: 'var(--latte)' }} />

@@ -139,7 +139,7 @@ export default function DashboardPage() {
       .channel('dashboard-orders')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'orders' },
+        { event: '*', schema: 'cafe_orders', table: 'orders' },
         (payload) => {
           const id = (payload.new as Order)?.id || (payload.old as Order)?.id
           if (id && pendingUpdates.current.has(id)) { pendingUpdates.current.delete(id); return }

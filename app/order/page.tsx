@@ -1,17 +1,12 @@
 /**
  * FILE: app/order/page.tsx
- * PURPOSE: Customer-facing menu browsing page.
- *          - Validates table number from localStorage
- *          - Blocks ordering if table already has an active order
- *          - Fetches live menu from Supabase (falls back to MOCK_MENU)
- *          - Category filter strip + item grid
- *          - Item modal with quantity stepper + customization options
- *          - Floating cart bar
- *          - Extra Protein upsell nudge shown after a pizza is added
+ * PURPOSE: Customer-facing menu browsing — dine-in and delivery.
  *
- * CATEGORY ORDER: Pizzas first, Drinks and Extras last.
- *   Classic Pizzas → Roni's Specials → Protein Specials → Drinks → Extras
- *   Any unknown future categories are appended alphabetically after Extras.
+ * CHANGES vs previous version:
+ *   - Reads `mode` param: 'delivery' skips the active-order blocking check
+ *     (delivery allows multiple concurrent orders unlike single dine-in tables)
+ *   - `mode` is forwarded to the cart URL so it persists through checkout
+ *   - Extra Protein upsell after pizza is added (unchanged)
  */
 
 'use client'
@@ -35,7 +30,6 @@ const CATEGORY_ORDER = [
   'Extras',
 ]
 
-// Categories that trigger the Extra Protein upsell
 const PIZZA_CATEGORIES = ['Classic Pizzas', "Roni's Specials", 'Protein Specials']
 
 function sortCategories(cats: string[]): string[] {
@@ -54,32 +48,41 @@ function OrderPageInner() {
   const router       = useRouter()
   const table        = searchParams.get('table') || ''
   const addOn        = searchParams.get('addOn') === '1'
+  const mode         = searchParams.get('mode') || 'dine-in'   // 'dine-in' | 'delivery'
+  const isDelivery   = mode === 'delivery'
 
-  const [menu, setMenu]               = useState<MenuItem[]>(MOCK_MENU)
-  const [activeCategory, setCategory] = useState('All')
-  const [selectedItem, setSelected]   = useState<MenuItem | null>(null)
-  const [tableBlocked, setBlocked]    = useState(false)
-  const [validTables, setValidTables] = useState<string[]>([])
+  const [menu, setMenu]                 = useState<MenuItem[]>(MOCK_MENU)
+  const [activeCategory, setCategory]   = useState('All')
+  const [selectedItem, setSelected]     = useState<MenuItem | null>(null)
+  const [tableBlocked, setBlocked]      = useState(false)
+  const [validTables, setValidTables]   = useState<string[]>([])
   const [tablesLoaded, setTablesLoaded] = useState(false)
   const [upsellProtein, setUpsellProtein] = useState<MenuItem | null>(null)
 
   const { addItem, itemCount, setTableNumber } = useCartStore()
 
   useEffect(() => {
+    if (isDelivery) {
+      // Delivery: skip table validation, go straight to loading the menu
+      setTablesLoaded(true)
+      setValidTables(['delivery'])
+      return
+    }
     const saved = localStorage.getItem(STORAGE_KEY)
     const count = saved ? parseInt(saved) : 4
     const computed = Array.from({ length: count }, (_, i) => String(i + 1))
     setValidTables(computed)
     setTablesLoaded(true)
-  }, [])
+  }, [isDelivery])
 
   useEffect(() => {
     if (!tablesLoaded) return
-    if (!validTables.includes(table)) return
+    if (!isDelivery && !validTables.includes(table)) return
     setTableNumber(table)
 
     async function init() {
-      if (!addOn) {
+      // Only block for dine-in — delivery allows concurrent orders
+      if (!addOn && !isDelivery) {
         const { data: activeOrder } = await supabase
           .from('orders')
           .select('id')
@@ -102,7 +105,7 @@ function OrderPageInner() {
     }
 
     init()
-  }, [table, setTableNumber, validTables, tablesLoaded, addOn])
+  }, [table, setTableNumber, validTables, tablesLoaded, addOn, isDelivery])
 
   if (!tablesLoaded) {
     return (
@@ -113,7 +116,7 @@ function OrderPageInner() {
     )
   }
 
-  if (!validTables.includes(table)) {
+  if (!isDelivery && !validTables.includes(table)) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center"
         style={{ background: 'var(--cream)' }}>
@@ -155,16 +158,18 @@ function OrderPageInner() {
     return a.name.localeCompare(b.name)
   })
 
-  // Extra Protein item — hidden from the grid, shown as upsell after pizza is added
   const extraProteinItem = menu.find((i) => i.show_after_pizza)
 
-  // Filter show_after_pizza items out of the main grid entirely
   const visible = (activeCategory === 'All'
     ? sortedMenu
     : sortedMenu.filter((i) => i.category === activeCategory)
   ).filter((i) => !i.show_after_pizza)
 
   const cartCount = itemCount()
+
+  // Cart URL includes mode so the cart page knows it's delivery
+  const cartUrl = `/order/cart?table=${table}${addOn ? '&addOn=1' : ''}${isDelivery ? '&mode=delivery' : ''}`
+  const backUrl  = `/order?table=${table}${addOn ? '&addOn=1' : ''}${isDelivery ? '&mode=delivery' : ''}`
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--cream)' }}>
@@ -173,7 +178,9 @@ function OrderPageInner() {
         style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
         <div className="px-5 pt-5 pb-3">
           <p className="font-serif text-2xl" style={{ color: 'var(--espresso)' }}>{CAFE_NAME}</p>
-          <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>Table {table}</p>
+          <p className="text-xs mt-0.5" style={{ color: 'rgba(28,15,8,0.4)' }}>
+            {isDelivery ? '🛵 Delivery order' : `Table ${table}`}
+          </p>
           {addOn && (
             <p className="text-xs mt-1 font-medium" style={{ color: '#1D4ED8' }}>
               Adding items to your current order
@@ -183,8 +190,7 @@ function OrderPageInner() {
 
         <div className="flex gap-2 px-5 pb-3 overflow-x-auto scrollbar-hide">
           {categories.map((cat) => (
-            <button key={cat}
-              onClick={() => setCategory(cat)}
+            <button key={cat} onClick={() => setCategory(cat)}
               className="flex-shrink-0 text-xs px-3 py-1.5 rounded-full border transition-all"
               style={{
                 borderColor: activeCategory === cat ? 'var(--espresso)' : 'rgba(28,15,8,0.12)',
@@ -200,16 +206,12 @@ function OrderPageInner() {
       <div className="flex-1 p-4 pb-32 grid gap-3"
         style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
         {visible.map((item) => (
-          <button key={item.id}
-            onClick={() => setSelected(item)}
+          <button key={item.id} onClick={() => setSelected(item)}
             className="bg-white rounded-2xl border p-4 text-left flex gap-3 items-start transition-all active:scale-[0.98]"
             style={{ borderColor: 'rgba(28,15,8,0.08)' }}>
             {item.image_url ? (
-              <img
-                src={item.image_url}
-                alt={item.name}
-                className="w-14 h-14 rounded-xl object-cover shrink-0"
-              />
+              <img src={item.image_url} alt={item.name}
+                className="w-14 h-14 rounded-xl object-cover shrink-0" />
             ) : (
               <span className="text-3xl">{item.emoji}</span>
             )}
@@ -226,22 +228,18 @@ function OrderPageInner() {
         ))}
       </div>
 
-      {/* Extra Protein upsell nudge — appears after a pizza is added to cart */}
+      {/* Extra Protein upsell */}
       {upsellProtein && !selectedItem && (
         <UpsellNudge
           item={upsellProtein}
-          onAccept={() => {
-            setSelected(upsellProtein)
-            setUpsellProtein(null)
-          }}
+          onAccept={() => { setSelected(upsellProtein); setUpsellProtein(null) }}
           onDismiss={() => setUpsellProtein(null)}
         />
       )}
 
       {cartCount > 0 && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-20">
-          <button
-            onClick={() => router.push(`/order/cart?table=${table}${addOn ? '&addOn=1' : ''}`)}
+          <button onClick={() => router.push(cartUrl)}
             className="flex items-center gap-3 px-6 py-3 rounded-2xl text-white shadow-lg"
             style={{ background: 'var(--espresso)' }}>
             <span className="text-xs font-medium px-2 py-0.5 rounded-full"
@@ -260,7 +258,6 @@ function OrderPageInner() {
           onAdd={(options, qty) => {
             addItem(selectedItem, options, undefined, qty)
             setSelected(null)
-            // Trigger Extra Protein upsell when a pizza is added
             if (PIZZA_CATEGORIES.includes(selectedItem.category) && extraProteinItem) {
               setUpsellProtein(extraProteinItem)
             }
@@ -273,25 +270,13 @@ function OrderPageInner() {
 
 // ─── UpsellNudge ─────────────────────────────────────────────────────────────
 
-function UpsellNudge({
-  item,
-  onAccept,
-  onDismiss,
-}: {
-  item: MenuItem
-  onAccept: () => void
-  onDismiss: () => void
+function UpsellNudge({ item, onAccept, onDismiss }: {
+  item: MenuItem; onAccept: () => void; onDismiss: () => void
 }) {
   return (
-    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-20 w-full max-w-sm px-4 animate-fade-up">
-      <div
-        className="flex items-center gap-3 rounded-2xl px-4 py-3 shadow-xl"
-        style={{
-          background: 'var(--espresso)',
-          color: '#fff',
-          border: '1px solid rgba(255,255,255,0.08)',
-        }}
-      >
+    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-20 w-full max-w-sm px-4">
+      <div className="flex items-center gap-3 rounded-2xl px-4 py-3 shadow-xl"
+        style={{ background: 'var(--espresso)', color: '#fff', border: '1px solid rgba(255,255,255,0.08)' }}>
         <span className="text-2xl">➕</span>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold leading-tight">Boost your pizza?</p>
@@ -299,18 +284,14 @@ function UpsellNudge({
             Add extra protein — {formatPrice(item.price)}
           </p>
         </div>
-        <button
-          onClick={onAccept}
-          className="flex-shrink-0 text-xs font-semibold px-3 py-1.5 rounded-xl transition-all"
-          style={{ background: 'var(--latte)', color: '#fff' }}
-        >
+        <button onClick={onAccept}
+          className="flex-shrink-0 text-xs font-semibold px-3 py-1.5 rounded-xl"
+          style={{ background: 'var(--latte)', color: '#fff' }}>
           Add
         </button>
-        <button
-          onClick={onDismiss}
-          className="flex-shrink-0 text-xs px-2 py-1.5 rounded-xl"
-          style={{ color: 'rgba(255,255,255,0.35)' }}
-        >
+        <button onClick={onDismiss}
+          className="flex-shrink-0 text-xs px-2 py-1.5"
+          style={{ color: 'rgba(255,255,255,0.35)' }}>
           ✕
         </button>
       </div>
@@ -320,11 +301,7 @@ function UpsellNudge({
 
 // ─── ItemModal ────────────────────────────────────────────────────────────────
 
-function ItemModal({
-  item,
-  onClose,
-  onAdd,
-}: {
+function ItemModal({ item, onClose, onAdd }: {
   item: MenuItem
   onClose: () => void
   onAdd: (options: Record<string, string>, quantity: number) => void
@@ -349,18 +326,14 @@ function ItemModal({
 
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center"
-      style={{ background: 'rgba(28,15,8,0.4)' }}
-      onClick={onClose}>
+      style={{ background: 'rgba(28,15,8,0.4)' }} onClick={onClose}>
       <div className="w-full max-w-lg bg-white rounded-t-3xl p-6 pb-10"
         onClick={(e) => e.stopPropagation()}>
 
         <div className="flex items-start gap-3 mb-5">
           {item.image_url ? (
-            <img
-              src={item.image_url}
-              alt={item.name}
-              className="w-16 h-16 rounded-2xl object-cover shrink-0"
-            />
+            <img src={item.image_url} alt={item.name}
+              className="w-16 h-16 rounded-2xl object-cover shrink-0" />
           ) : (
             <span className="text-4xl">{item.emoji}</span>
           )}
@@ -377,8 +350,7 @@ function ItemModal({
             </p>
             <div className="flex flex-wrap gap-2">
               {c.options.map((opt) => (
-                <button key={opt}
-                  onClick={() => setSelections((s) => ({ ...s, [c.label]: opt }))}
+                <button key={opt} onClick={() => setSelections((s) => ({ ...s, [c.label]: opt }))}
                   className="text-xs px-3 py-1.5 rounded-full border transition-all"
                   style={{
                     borderColor: selections[c.label] === opt ? 'var(--espresso)' : 'rgba(28,15,8,0.15)',
@@ -394,28 +366,17 @@ function ItemModal({
 
         <div className="flex items-center justify-between py-3 mb-4 border-t border-b"
           style={{ borderColor: 'rgba(28,15,8,0.07)' }}>
-          <p className="text-sm font-medium" style={{ color: 'var(--espresso)' }}>Quantity</p>
+          <p className="text-sm font-medium">Quantity</p>
           <div className="flex items-center gap-5">
-            <button
-              onClick={() => setQuantity((q) => Math.max(1, q - 1))}
-              className="w-9 h-9 rounded-full border flex items-center justify-center text-lg font-medium transition-all"
-              style={{
-                borderColor: quantity === 1 ? 'rgba(28,15,8,0.1)' : 'rgba(28,15,8,0.2)',
-                color:       quantity === 1 ? 'rgba(28,15,8,0.2)' : 'var(--espresso)',
-              }}>
+            <button onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+              className="w-9 h-9 rounded-full border flex items-center justify-center text-lg"
+              style={{ borderColor: quantity === 1 ? 'rgba(28,15,8,0.1)' : 'rgba(28,15,8,0.2)', color: quantity === 1 ? 'rgba(28,15,8,0.2)' : 'var(--espresso)' }}>
               −
             </button>
-            <span className="text-lg font-semibold w-5 text-center"
-              style={{ color: 'var(--espresso)' }}>
-              {quantity}
-            </span>
-            <button
-              onClick={() => setQuantity((q) => Math.min(9, q + 1))}
-              className="w-9 h-9 rounded-full border flex items-center justify-center text-lg font-medium transition-all"
-              style={{
-                borderColor: quantity === 9 ? 'rgba(28,15,8,0.1)' : 'rgba(28,15,8,0.2)',
-                color:       quantity === 9 ? 'rgba(28,15,8,0.2)' : 'var(--espresso)',
-              }}>
+            <span className="text-lg font-semibold w-5 text-center">{quantity}</span>
+            <button onClick={() => setQuantity((q) => Math.min(9, q + 1))}
+              className="w-9 h-9 rounded-full border flex items-center justify-center text-lg"
+              style={{ borderColor: quantity === 9 ? 'rgba(28,15,8,0.1)' : 'rgba(28,15,8,0.2)', color: quantity === 9 ? 'rgba(28,15,8,0.2)' : 'var(--espresso)' }}>
               +
             </button>
           </div>
@@ -424,10 +385,10 @@ function ItemModal({
         <button
           disabled={!allSelected}
           onClick={() => onAdd(selections, quantity)}
-          className="w-full py-3 rounded-xl text-white text-sm font-medium transition-all"
+          className="w-full py-3 rounded-xl text-sm font-medium transition-all"
           style={{
             background: allSelected ? 'var(--espresso)' : 'rgba(28,15,8,0.15)',
-            color: allSelected ? '#fff' : 'rgba(28,15,8,0.4)',
+            color:      allSelected ? '#fff' : 'rgba(28,15,8,0.4)',
           }}>
           {allSelected
             ? `Add ${quantity > 1 ? `${quantity} × ` : ''}to cart — ${formatPrice(unitPrice * quantity)}`
@@ -439,9 +400,5 @@ function ItemModal({
 }
 
 export default function OrderPage() {
-  return (
-    <Suspense>
-      <OrderPageInner />
-    </Suspense>
-  )
+  return <Suspense><OrderPageInner /></Suspense>
 }
